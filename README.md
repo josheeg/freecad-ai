@@ -85,9 +85,15 @@ property — not a broken server.
 | --- | --- | --- |
 | `FREECAD_AI_PORT` | `9875` | Bridge port |
 | `FREECAD_AI_HOST` | `127.0.0.1` | Bind address — **leave it on loopback** |
+| `FREECAD_AI_FREECAD_BIN` | `C:\Program Files\FreeCAD 1.1\bin` | Where `freecadcmd.exe` lives |
 
 The bridge is unauthenticated. Anyone who can reach the port has full control
 of FreeCAD, so do not widen the bind address.
+
+If the port is already taken by another FreeCAD, startup fails with
+`PortInUse` rather than connecting to that instance — silently adopting
+someone else's session would hand the model their open documents. Note
+`freecad-robust-mcp-server` also defaults to 9875.
 
 ## Development
 

@@ -298,3 +298,7 @@ def shape_summary(document: str, object_name: str) -> dict[str, Any]:
 def main() -> None:
     """Console-script entry point: serve MCP over stdio."""
     server.run(transport="stdio")
+
+
+if __name__ == "__main__":  # pragma: no cover - exercised over the wire
+    main()
