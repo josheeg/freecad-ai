@@ -60,6 +60,7 @@ def configured_port() -> int:
         raise BridgeError(f"{ENV_PORT}={port} is outside 1-65535")
     return port
 
+
 # freecadcmd is not on PATH; both 1.0 and 1.1 are installed side by side, so an
 # unqualified path silently binds the wrong one.
 FREECAD_1_1_BIN = Path(r"C:\Program Files\FreeCAD 1.1\bin")
@@ -219,9 +220,7 @@ class Bridge:
 
     def new_document(self, name: str, reuse: bool = True) -> dict[str, Any]:
         """Create a document, or return the existing one when ``reuse``."""
-        return cast(
-            "dict[str, Any]", self._call("new_document", name, bool(reuse))
-        )
+        return cast("dict[str, Any]", self._call("new_document", name, bool(reuse)))
 
     def open_document(self, path: str) -> str:
         return cast(str, self._call("open_document", path))
@@ -245,6 +244,91 @@ class Bridge:
     def instance_pid(self) -> int:
         """PID of the FreeCAD process actually serving this bridge."""
         return int(cast("dict[str, Any]", self._call("instance_id"))["pid"])
+
+    def describe_geometry(self, name: str, object_name: str) -> dict[str, Any]:
+        return cast(
+            "dict[str, Any]", self._call("describe_geometry", name, object_name)
+        )
+
+    def fillet(
+        self,
+        name: str,
+        object_name: str,
+        result_name: str,
+        edges: list[int],
+        radius: float,
+    ) -> str:
+        return cast(
+            str,
+            self._call(
+                "fillet",
+                name,
+                object_name,
+                result_name,
+                [int(e) for e in edges],
+                float(radius),
+            ),
+        )
+
+    def chamfer(
+        self,
+        name: str,
+        object_name: str,
+        result_name: str,
+        edges: list[int],
+        size: float,
+    ) -> str:
+        return cast(
+            str,
+            self._call(
+                "chamfer",
+                name,
+                object_name,
+                result_name,
+                [int(e) for e in edges],
+                float(size),
+            ),
+        )
+
+    def mirror(
+        self,
+        name: str,
+        object_name: str,
+        result_name: str,
+        origin: list[float],
+        normal: list[float],
+    ) -> str:
+        return cast(
+            str,
+            self._call(
+                "mirror",
+                name,
+                object_name,
+                result_name,
+                [float(v) for v in origin],
+                [float(v) for v in normal],
+            ),
+        )
+
+    def linear_array(
+        self,
+        name: str,
+        object_name: str,
+        result_name: str,
+        offset: list[float],
+        count: int,
+    ) -> str:
+        return cast(
+            str,
+            self._call(
+                "linear_array",
+                name,
+                object_name,
+                result_name,
+                [float(v) for v in offset],
+                int(count),
+            ),
+        )
 
     def list_primitive_types(self) -> list[dict[str, Any]]:
         return cast("list[dict[str, Any]]", self._call("list_primitive_types"))

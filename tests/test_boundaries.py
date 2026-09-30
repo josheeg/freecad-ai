@@ -12,6 +12,7 @@ caught a wiring problem between the process and a real MCP client.
 
 from __future__ import annotations
 
+import itertools
 import json
 import os
 import subprocess
@@ -190,18 +191,34 @@ class _StdioClient:
         return self.read()
 
     def close(self) -> None:
-        if self.process.poll() is None:
+        """Shut the server down the way a real client does: close stdin.
+
+        terminate() on Windows is TerminateProcess, which skips atexit — so
+        the FreeCAD the server started would be orphaned, still holding its
+        port. Closing stdin ends the session normally and the atexit handler
+        runs.
+        """
+        if self.process.stdin is not None and not self.process.stdin.closed:
+            self.process.stdin.close()
+        try:
+            self.process.wait(timeout=30)
+        except subprocess.TimeoutExpired:
             self.process.terminate()
             try:
                 self.process.wait(timeout=10)
             except subprocess.TimeoutExpired:
                 self.process.kill()
+                self.process.wait(timeout=10)
+
+
+_PORT_SEQ = itertools.count(19910)
 
 
 @pytest.fixture
-def stdio_client(request: pytest.FixtureRequest) -> Any:
-    port = 19910 + abs(hash(request.node.name)) % 40
-    client = _StdioClient(port)
+def stdio_client() -> Any:
+    # A distinct port per client. hash() is salted per process, so it can
+    # collide across runs; a counter cannot.
+    client = _StdioClient(next(_PORT_SEQ))
     try:
         yield client
     finally:
@@ -293,11 +310,15 @@ def test_wheel_contains_a_working_package(tmp_path: Path) -> None:
 
 
 def test_installed_package_resolves_its_bridge_script(tmp_path: Path) -> None:
-    """Installed into a clean venv, the script path must still resolve.
+    """Laid out as an install, the script path must still resolve.
 
     This is the regression that shipped: BRIDGE_SCRIPT walked out of the
     package to find a project root, which exists in the source tree and does
     not exist in site-packages.
+
+    The wheel is extracted rather than pip-installed into a venv. The thing
+    under test is the file arrangement, and extracting reaches it without
+    pulling the MCP dependency tree over the network.
     """
     build = build_wheel(tmp_path)
     if build.returncode != 0:
@@ -306,37 +327,26 @@ def test_installed_package_resolves_its_bridge_script(tmp_path: Path) -> None:
     if not wheels:
         pytest.skip("no wheel produced")
 
-    venv = tmp_path / "venv"
-    created = subprocess.run(
-        [sys.executable, "-m", "venv", str(venv)], capture_output=True, text=True
-    )
-    if created.returncode != 0:
-        pytest.skip("could not create a venv")
+    site = tmp_path / "site-packages"
+    site.mkdir()
+    with zipfile.ZipFile(wheels[0]) as archive:
+        archive.extractall(site)
+    assert (site / "freecad_ai" / "_freecad_bridge.py").is_file()
 
-    python = venv / ("Scripts" if os.name == "nt" else "bin") / (
-        "python.exe" if os.name == "nt" else "python"
-    )
-    installed = subprocess.run(
-        [str(python), "-m", "pip", "install", "--quiet", str(wheels[0])],
-        capture_output=True,
-        text=True,
-    )
-    if installed.returncode != 0:
-        pytest.skip(f"pip install unavailable: {installed.stderr.strip()[:200]}")
-
-    # Import from the install, not the source tree, and resolve the script.
+    # Import from the extracted layout, not the repo's own copy.
     probe = (
         "import freecad_ai.bridge as b, pathlib;"
         "print(pathlib.Path(b.__file__).parent);"
         "print(b.BRIDGE_SCRIPT.is_file())"
     )
     result = subprocess.run(
-        [str(python), "-c", probe],
+        [sys.executable, "-c", probe],
         capture_output=True,
         text=True,
         cwd=str(tmp_path),
+        env={**os.environ, "PYTHONPATH": str(site)},
     )
-    assert result.returncode == 0, result.stderr[-400:]
+    assert result.returncode == 0, result.stderr[-500:]
     location, resolved = result.stdout.strip().splitlines()[-2:]
-    assert "site-packages" in location, location
+    assert str(site) in location, location
     assert resolved == "True", f"bridge script not found from {location}"

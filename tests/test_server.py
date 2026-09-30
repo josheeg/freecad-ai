@@ -69,6 +69,11 @@ def test_every_tool_is_registered(registry: Any) -> None:
         "boolean_op",
         "set_placement",
         "list_primitive_types",
+        "describe_geometry",
+        "fillet",
+        "chamfer",
+        "mirror",
+        "linear_array",
     }
 
 
@@ -132,6 +137,7 @@ def test_no_tool_returns_a_bare_list(registry: Any, monkeypatch: Any) -> None:
         "list_objects",
         "get_properties",
         "shape_summary",
+        "describe_geometry",
     ):
         setattr(fake, name, MagicMock(return_value=["a", "b", "c"]))
     monkeypatch.setattr(server_module, "get_bridge", lambda: fake)

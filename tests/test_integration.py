@@ -17,6 +17,7 @@ from pathlib import Path
 import pytest
 
 from freecad_ai.bridge import (
+    BadGeometry,
     BadOperation,
     Bridge,
     BridgeError,
@@ -240,9 +241,7 @@ def test_concurrent_calls_from_many_threads_all_succeed(bridge: Bridge) -> None:
     document = bridge.new_document("conc")["name"]
 
     def add(i: int) -> str:
-        return bridge.add_primitive(
-            document, "Part::Box", f"B{i}", {"Length": 10.0}
-        )
+        return bridge.add_primitive(document, "Part::Box", f"B{i}", {"Length": 10.0})
 
     with ThreadPoolExecutor(max_workers=8) as pool:
         names = [f.result() for f in [pool.submit(add, i) for i in range(8)]]
@@ -337,6 +336,131 @@ def test_connected_bridge_is_the_process_we_started() -> None:
         assert bridge.instance_pid() == process.pid
     finally:
         stop(process)
+
+
+@pytest.fixture
+def block20(bridge: Bridge) -> str:
+    """A 20x20x20 box. Edge1 is the vertical edge (0,0,0)-(0,0,20)."""
+    document = bridge.new_document(f"blk{uuid.uuid4().hex[:8]}")["name"]
+    bridge.add_primitive(
+        document,
+        "Part::Box",
+        "B",
+        {"Length": 20.0, "Width": 20.0, "Height": 20.0},
+    )
+    return document
+
+
+@pytest.mark.integration
+def test_describe_geometry_lists_edges_and_faces(bridge: Bridge, block20: str) -> None:
+    geometry = bridge.describe_geometry(block20, "B")
+    assert geometry["edge_count"] == 12
+    assert geometry["face_count"] == 6
+    assert len(geometry["edges"]) == 12
+    # Names must be exactly what fillet and chamfer accept.
+    assert geometry["edges"][0]["name"] == "Edge1"
+    assert geometry["edges"][0]["index"] == 1
+    assert geometry["edges"][0]["type"] == "Line"
+    assert geometry["edges"][0]["length"] == pytest.approx(20.0)
+    assert geometry["edges"][0]["start"] == [0.0, 0.0, 20.0]
+    assert geometry["faces"][0]["name"] == "Face1"
+    assert geometry["faces"][0]["area"] == pytest.approx(400.0)
+
+
+@pytest.mark.integration
+def test_fillet_removes_material(bridge: Bridge, block20: str) -> None:
+    """Volume measured against FreeCAD 1.1.3, not derived by hand."""
+    assert bridge.shape_summary(block20, "B")["volume"] == pytest.approx(8000.0)
+    bridge.fillet(block20, "B", "Rounded", [1], 3.0)
+    assert bridge.shape_summary(block20, "Rounded")["volume"] == pytest.approx(
+        7961.372, abs=0.01
+    )
+    assert bridge.shape_summary(block20, "B")["volume"] == pytest.approx(8000.0)
+
+
+@pytest.mark.integration
+def test_fillet_two_edges(bridge: Bridge, block20: str) -> None:
+    bridge.fillet(block20, "B", "Two", [1, 3], 2.0)
+    assert bridge.shape_summary(block20, "Two")["volume"] == pytest.approx(
+        7965.664, abs=0.01
+    )
+
+
+@pytest.mark.integration
+def test_chamfer_removes_material(bridge: Bridge, block20: str) -> None:
+    bridge.chamfer(block20, "B", "Cut", [1], 2.0)
+    assert bridge.shape_summary(block20, "Cut")["volume"] == pytest.approx(
+        7960.0, abs=0.01
+    )
+
+
+@pytest.mark.integration
+def test_fillet_rejects_a_missing_edge(bridge: Bridge, block20: str) -> None:
+    with pytest.raises(BadGeometry, match="does not exist"):
+        bridge.fillet(block20, "B", "Nope", [99], 2.0)
+
+
+@pytest.mark.integration
+def test_fillet_rejects_a_non_positive_radius(bridge: Bridge, block20: str) -> None:
+    with pytest.raises(BadGeometry, match="radius must be positive"):
+        bridge.fillet(block20, "B", "Nope", [1], 0.0)
+
+
+@pytest.mark.integration
+def test_fillet_rejects_an_unfittable_radius(bridge: Bridge, block20: str) -> None:
+    """A radius larger than the box cannot be built; say so, do not crash."""
+    with pytest.raises(BadGeometry, match="does not fit"):
+        bridge.fillet(block20, "B", "Nope", [1], 500.0)
+
+
+@pytest.mark.integration
+def test_mirror_reflects_across_a_plane(bridge: Bridge) -> None:
+    document = bridge.new_document(f"mir{uuid.uuid4().hex[:8]}")["name"]
+    bridge.add_primitive(
+        document, "Part::Box", "B", {"Length": 10.0, "Width": 10.0, "Height": 10.0}
+    )
+    # Reflect through the x=0 plane: the copy lands at negative x.
+    bridge.mirror(document, "B", "Flipped", [0.0, 0.0, 0.0], [1.0, 0.0, 0.0])
+    box = bridge.shape_summary(document, "Flipped")["bbox"]
+    assert box[0] == pytest.approx(-10.0)
+    assert box[3] == pytest.approx(0.0)
+
+
+@pytest.mark.integration
+def test_mirror_rejects_a_zero_normal(bridge: Bridge) -> None:
+    document = bridge.new_document(f"mir0{uuid.uuid4().hex[:8]}")["name"]
+    bridge.add_primitive(document, "Part::Box", "B", {"Length": 10.0})
+    with pytest.raises(BadGeometry, match="zero vector"):
+        bridge.mirror(document, "B", "Nope", [0.0, 0.0, 0.0], [0.0, 0.0, 0.0])
+
+
+@pytest.mark.integration
+def test_linear_array_multiplies_volume(bridge: Bridge) -> None:
+    document = bridge.new_document(f"arr{uuid.uuid4().hex[:8]}")["name"]
+    bridge.add_primitive(
+        document, "Part::Box", "B", {"Length": 10.0, "Width": 10.0, "Height": 10.0}
+    )
+    bridge.linear_array(document, "B", "Row", [30.0, 0.0, 0.0], 3)
+    # 30mm apart, boxes are 10mm, so three copies never touch.
+    assert bridge.shape_summary(document, "Row")["volume"] == pytest.approx(
+        3000.0, rel=1e-3
+    )
+
+
+@pytest.mark.integration
+def test_linear_array_rejects_a_count_of_one(bridge: Bridge) -> None:
+    document = bridge.new_document(f"arr1{uuid.uuid4().hex[:8]}")["name"]
+    bridge.add_primitive(document, "Part::Box", "B", {"Length": 10.0})
+    with pytest.raises(BadGeometry, match="count of 1"):
+        bridge.linear_array(document, "B", "Nope", [10.0, 0.0, 0.0], 1)
+
+
+@pytest.mark.integration
+def test_fillet_then_export(bridge: Bridge, block20: str, tmp_path: Path) -> None:
+    bridge.fillet(block20, "B", "Rounded", [1], 3.0)
+    target = tmp_path / "rounded.step"
+    bridge.export_object(block20, "Rounded", str(target))
+    assert target.stat().st_size > 0
 
 
 @pytest.mark.integration

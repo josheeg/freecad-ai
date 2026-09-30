@@ -45,6 +45,8 @@ FAULT_NO_SUCH_DIMENSION = 106
 FAULT_EXPORT_FAILED = 107
 FAULT_SAVE_FAILED = 108
 FAULT_BAD_OPERATION = 109
+FAULT_BAD_GEOMETRY = 110
+FAULT_NO_SUCH_FEATURE = 111
 
 # FreeCAD 1.1 has no generic Part::Boolean; each operation is its own
 # parametric feature type with Base and Tool links. Verified against 1.1.3.
@@ -247,8 +249,10 @@ def _scalar(value: Any) -> tuple[bool, Any]:
         return True, value
     unit = getattr(value, "Unit", None)
     magnitude = getattr(value, "Value", None)
-    if unit is not None and isinstance(magnitude, (int, float)) and not isinstance(
-        magnitude, bool
+    if (
+        unit is not None
+        and isinstance(magnitude, (int, float))
+        and not isinstance(magnitude, bool)
     ):
         # str(Quantity.Unit) is verbose ("Unit: mm (1,0,0,0,0,0,0,0) [Length]");
         # getUserPreferred() yields a clean ("10.00 mm", 1.0, "mm") triple.
@@ -404,6 +408,226 @@ def list_primitive_types() -> list[dict[str, Any]]:
         finally:
             FreeCAD.closeDocument(probe.Name)
     return catalog
+
+
+def _shape_of(document: str, object_name: str) -> Any:
+    doc = _require(document)
+    obj = _object(doc, object_name)
+    shape = getattr(obj, "Shape", None)
+    if shape is None or shape.isNull():
+        _fail(FAULT_NO_SHAPE, f"{object_name} has no shape")
+    return shape
+
+
+def _feature(name: str, kind: str, document: str) -> Any:
+    doc = _require(document)
+    try:
+        return doc.addObject(kind, name)
+    except Exception as error:
+        _fail(FAULT_NO_SUCH_FEATURE, f"cannot create {kind}: {error}")
+        return None  # unreachable
+
+
+def describe_geometry(document: str, object_name: str) -> dict[str, Any]:
+    """List an object's edges and faces so they can be referred to by name.
+
+    Fillet and chamfer take edge numbers, which are useless unless something
+    can say which edge is which. Edges are reported as FreeCAD names
+    (Edge1, Edge2, ...) because that is exactly what those features expect.
+    """
+    shape = _shape_of(document, object_name)
+    edges = []
+    for index, edge in enumerate(shape.Edges, start=1):
+        start = edge.Vertexes[0].Point if edge.Vertexes else None
+        end = edge.Vertexes[-1].Point if edge.Vertexes else None
+        entry: dict[str, Any] = {
+            "name": f"Edge{index}",
+            "index": index,
+            "type": type(edge.Curve).__name__,
+            "length": edge.Length,
+        }
+        if start is not None:
+            entry["start"] = [round(start.x, 4), round(start.y, 4), round(start.z, 4)]
+            entry["end"] = [round(end.x, 4), round(end.y, 4), round(end.z, 4)]
+        edges.append(entry)
+
+    faces = []
+    for index, face in enumerate(shape.Faces, start=1):
+        centre = face.CenterOfMass
+        faces.append(
+            {
+                "name": f"Face{index}",
+                "index": index,
+                "type": type(face.Surface).__name__,
+                "area": face.Area,
+                "center": [
+                    round(centre.x, 4),
+                    round(centre.y, 4),
+                    round(centre.z, 4),
+                ],
+            }
+        )
+    return {
+        "object": object_name,
+        "edge_count": len(edges),
+        "face_count": len(faces),
+        "edges": edges,
+        "faces": faces,
+    }
+
+
+def _edge_pairs(
+    edges: Any, size: float, document: str, object_name: str
+) -> list[tuple[int, float, float]]:
+    """Normalise edge input to the (index, start, end) tuples FreeCAD wants."""
+    shape = _shape_of(document, object_name)
+    if not isinstance(edges, list) or not edges:
+        _fail(FAULT_BAD_GEOMETRY, "edges must be a non-empty list of edge numbers")
+        return []
+    pairs: list[tuple[int, float, float]] = []
+    for item in edges:
+        if isinstance(item, bool) or not isinstance(item, int):
+            _fail(
+                FAULT_BAD_GEOMETRY,
+                f"edge must be an integer index, got {item!r}; "
+                f"use describe_geometry to list them",
+            )
+            return []
+        if not 1 <= item <= len(shape.Edges):
+            _fail(
+                FAULT_BAD_GEOMETRY,
+                f"{object_name} has {len(shape.Edges)} edges, so Edge{item} "
+                f"does not exist",
+            )
+            return []
+        pairs.append((item, float(size), float(size)))
+    return pairs
+
+
+def fillet(
+    document: str,
+    object_name: str,
+    result_name: str,
+    edges: list[int],
+    radius: float,
+) -> str:
+    """Round edges. Part::Fillet takes Base as the object and Edges as
+    (index, start_radius, end_radius) tuples, 1-based."""
+    if radius <= 0:
+        _fail(FAULT_BAD_GEOMETRY, f"radius must be positive, got {radius}")
+        return ""
+    doc = _require(document)
+    _object(doc, object_name)
+    feature = _feature(result_name, "Part::Fillet", document)
+    feature.Base = _object(doc, object_name)
+    feature.Edges = _edge_pairs(edges, radius, document, object_name)
+    doc.recompute()
+    if feature.Shape.isNull():
+        _fail(
+            FAULT_BAD_GEOMETRY,
+            f"a radius of {radius} does not fit on {edges}; try a smaller value",
+        )
+    return feature.Name
+
+
+def chamfer(
+    document: str,
+    object_name: str,
+    result_name: str,
+    edges: list[int],
+    size: float,
+) -> str:
+    """Cut edges flat. Same shape as fillet; Part::Chamfer reuses the same
+    (index, start, end) tuple where both values are the chamfer size."""
+    if size <= 0:
+        _fail(FAULT_BAD_GEOMETRY, f"size must be positive, got {size}")
+        return ""
+    doc = _require(document)
+    _object(doc, object_name)
+    feature = _feature(result_name, "Part::Chamfer", document)
+    feature.Base = _object(doc, object_name)
+    feature.Edges = _edge_pairs(edges, size, document, object_name)
+    doc.recompute()
+    if feature.Shape.isNull():
+        _fail(
+            FAULT_BAD_GEOMETRY,
+            f"a chamfer of {size} does not fit on {edges}; try a smaller value",
+        )
+    return feature.Name
+
+
+def mirror(
+    document: str,
+    object_name: str,
+    result_name: str,
+    origin: list[float],
+    normal: list[float],
+) -> str:
+    """Reflect an object through a plane given by a point and a normal."""
+    import FreeCAD
+
+    doc = _require(document)
+    _object(doc, object_name)
+    if len(origin) != 3 or len(normal) != 3:
+        _fail(FAULT_BAD_GEOMETRY, "origin and normal must each have 3 values")
+        return ""
+    n = FreeCAD.Vector(*(float(v) for v in normal))
+    if n.Length == 0:
+        _fail(FAULT_BAD_GEOMETRY, "the mirror normal must not be a zero vector")
+        return ""
+    feature = _feature(result_name, "Part::Mirroring", document)
+    feature.Source = _object(doc, object_name)
+    feature.Base = FreeCAD.Vector(*(float(v) for v in origin))
+    feature.Normal = n
+    doc.recompute()
+    return feature.Name
+
+
+def linear_array(
+    document: str,
+    object_name: str,
+    result_name: str,
+    offset: list[float],
+    count: int,
+) -> str:
+    """Repeat an object along a straight line.
+
+    Built as a Part::MultiFuse of translated copies. FreeCAD's own array
+    types (Part::Array, Draft::Array) are not registered in a headless
+    document, and fusing copies needs no workbench.
+    """
+    doc = _require(document)
+    source = _object(doc, object_name)
+    if len(offset) != 3:
+        _fail(FAULT_BAD_GEOMETRY, "offset must have 3 values")
+        return ""
+    if count < 1:
+        _fail(FAULT_BAD_GEOMETRY, f"count must be at least 1, got {count}")
+        return ""
+    if count == 1:
+        _fail(
+            FAULT_BAD_GEOMETRY,
+            "count of 1 would just copy the object; use copy if that is what you want",
+        )
+        return ""
+
+    import FreeCAD
+
+    copies = [source]
+    step = FreeCAD.Vector(*(float(v) for v in offset))
+    for index in range(1, count):
+        duplicate = doc.addObject("Part::Feature", f"{result_name}_c{index}")
+        duplicate.Shape = source.Shape.copy()
+        duplicate.Placement.Base = source.Placement.Base + step * index
+        copies.append(duplicate)
+    doc.recompute()
+
+    feature = _feature(result_name, "Part::MultiFuse", document)
+    feature.Shapes = copies
+    doc.recompute()
+    if feature.Shape.isNull():
+        _fail(FAULT_BAD_GEOMETRY, f"the copies of {object_name} do not form a solid")
+    return feature.Name
 
 
 def get_properties(name: str, object_name: str) -> dict[str, Any]:

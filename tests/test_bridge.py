@@ -20,6 +20,7 @@ from freecad_ai import bridge as bridge_module
 from freecad_ai.bridge import (
     BRIDGE_SCRIPT,
     FREECAD_1_1_BIN,
+    BadGeometry,
     BadOperation,
     Bridge,
     BridgeError,
@@ -29,6 +30,7 @@ from freecad_ai.bridge import (
     ExportFailed,
     NoShape,
     NoSuchDimension,
+    NoSuchFeature,
     ObjectNotFound,
     PropertyNotFound,
     SaveFailed,
@@ -97,9 +99,7 @@ def test_export_object_forwards_all_arguments() -> None:
     proxy = FakeProxy(result="C:/out/part.step")
     bridge = make_bridge(proxy)
     assert bridge.export_object("Doc", "Box", "C:/out/part.step").endswith("part.step")
-    assert proxy.calls == [
-        ("export_object", ("Doc", "Box", "C:/out/part.step"))
-    ]
+    assert proxy.calls == [("export_object", ("Doc", "Box", "C:/out/part.step"))]
 
 
 def test_bridge_serialises_calls() -> None:
@@ -231,6 +231,8 @@ def test_fault_codes_map_to_typed_errors() -> None:
         107: ExportFailed,
         108: SaveFailed,
         109: BadOperation,
+        110: BadGeometry,
+        111: NoSuchFeature,
     }
     for code, expected in cases.items():
         bridge = make_bridge(FakeProxy(raises=xmlrpc.client.Fault(code, "boom")))
@@ -253,9 +255,7 @@ def test_add_primitive_forwards_all_arguments() -> None:
     bridge = make_bridge(proxy)
     dimensions = {"Length": 10.0, "Width": 20.0, "Height": 30.0}
     assert bridge.add_primitive("Doc", "Part::Box", "Box", dimensions) == "Box"
-    assert proxy.calls == [
-        ("add_primitive", ("Doc", "Part::Box", "Box", dimensions))
-    ]
+    assert proxy.calls == [("add_primitive", ("Doc", "Part::Box", "Box", dimensions))]
 
 
 def test_wait_until_ready_times_out_when_nothing_listens() -> None:
@@ -335,9 +335,7 @@ def test_bridge_script_imports_freecad_only_inside_functions() -> None:
     body = text.split('if __name__ == "__main__"', 1)[0]
     for line in body.splitlines():
         stripped = line.strip()
-        if stripped.startswith("import FreeCAD") or stripped.startswith(
-            "from FreeCAD"
-        ):
+        if stripped.startswith("import FreeCAD") or stripped.startswith("from FreeCAD"):
             assert line.startswith((" ", "\t")), (
                 "module-level FreeCAD import in the bridge script"
             )

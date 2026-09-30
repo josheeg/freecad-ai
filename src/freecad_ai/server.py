@@ -265,6 +265,76 @@ def set_placement(
 
 
 @_tool(
+    "describe_geometry",
+    "List an object's edges and faces with their FreeCAD names (Edge1, "
+    "Face2), types, lengths and positions. Call this before fillet or "
+    "chamfer, which take edge numbers.",
+)
+def describe_geometry(document: str, object_name: str) -> dict[str, Any]:
+    return get_bridge().describe_geometry(document, object_name)
+
+
+@_tool(
+    "fillet",
+    "Round one or more edges, producing a new object. Edges are 1-based "
+    "indices from describe_geometry. The input object is kept.",
+)
+def fillet(
+    document: str,
+    object_name: str,
+    result_name: str,
+    edges: list[int],
+    radius: float,
+) -> str:
+    return get_bridge().fillet(document, object_name, result_name, edges, radius)
+
+
+@_tool(
+    "chamfer",
+    "Cut one or more edges flat, producing a new object. Edges are 1-based "
+    "indices from describe_geometry. The input object is kept.",
+)
+def chamfer(
+    document: str,
+    object_name: str,
+    result_name: str,
+    edges: list[int],
+    size: float,
+) -> str:
+    return get_bridge().chamfer(document, object_name, result_name, edges, size)
+
+
+@_tool(
+    "mirror",
+    "Reflect an object through a plane given by a point and a normal, "
+    "producing a new object. The input object is kept.",
+)
+def mirror(
+    document: str,
+    object_name: str,
+    result_name: str,
+    origin: list[float],
+    normal: list[float],
+) -> str:
+    return get_bridge().mirror(document, object_name, result_name, origin, normal)
+
+
+@_tool(
+    "linear_array",
+    "Repeat an object along a straight line, fusing the copies into a new "
+    "object. offset is the step between copies; count includes the original.",
+)
+def linear_array(
+    document: str,
+    object_name: str,
+    result_name: str,
+    offset: list[float],
+    count: int,
+) -> str:
+    return get_bridge().linear_array(document, object_name, result_name, offset, count)
+
+
+@_tool(
     "boolean_op",
     "Combine two objects into a new one. operation is cut, fuse or common. "
     "Both inputs are kept; the result is a new parametric feature.",

@@ -101,6 +101,7 @@ someone else's session would hand the model their open documents. Note
 uv run pytest                      # everything
 uv run pytest -m "not integration" # skip tests that start FreeCAD
 uv run ruff check .
+uv run ruff format .               # CI enforces `ruff format --check`
 uv run mypy
 ```
 
@@ -131,7 +132,7 @@ add_primitive("bracket", "Part::Box", "Plate", {"Length": 40, "Width": 20, "Heig
 add_primitive("bracket", "Part::Cylinder", "Hole", {"Radius": 2, "Height": 10})
 set_placement("bracket", "Hole", 10, 9, -3)
 boolean_op("bracket", "Plate", "Hole", "cut", "Drilled")
-shape_summary("bracket", "Drilled")   # volume 3149.73 (3200 plate − 50.27 hole)
+shape_summary("bracket", "Drilled")  # volume 3149.73 (3200 plate − 50.27 hole)
 export_object("bracket", "Drilled", "C:/parts/bracket.step")
 ```
 
