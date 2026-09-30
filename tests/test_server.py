@@ -81,6 +81,45 @@ def test_tool_parameters_keep_their_annotations(registry: Any) -> None:
     ]
 
 
+def test_no_tool_returns_a_bare_list(registry: Any, monkeypatch: Any) -> None:
+    """A list return value is silently truncated to its first element.
+
+    MCPServer's `_convert_to_content` treats a list as a sequence of content
+    blocks and chains them, so a tool reporting three objects would reach the
+    model as three separate text blocks — and `content[0]`, which is what
+    clients read, would hold only the first. Wrap list results in a dict.
+    """
+    from unittest.mock import MagicMock
+
+    fake = MagicMock()
+    for name in (
+        "version",
+        "list_documents",
+        "list_objects",
+        "get_properties",
+        "shape_summary",
+    ):
+        setattr(fake, name, MagicMock(return_value=["a", "b", "c"]))
+    monkeypatch.setattr(server_module, "get_bridge", lambda: fake)
+
+    samples: dict[str, Any] = {"float": 1.0, "bool": True, "str": "x"}
+    offenders: list[str] = []
+    for tool in registry._tools.values():
+        kwargs = {
+            parameter.name: samples.get(str(parameter.annotation), "x")
+            for parameter in inspect.signature(tool.fn).parameters.values()
+        }
+        if isinstance(tool.fn(**kwargs), list):
+            offenders.append(tool.name)
+    assert offenders == [], f"these return a bare list: {offenders}"
+
+
+def test_list_results_are_wrapped_in_a_dict(registry: Any) -> None:
+    """Multi-element results must reach the model intact, not as N blocks."""
+    payload = registry.get_tool("list_objects").fn(document="ghost")
+    assert isinstance(payload, dict), "list results must be wrapped in a dict"
+
+
 def test_non_bridge_exceptions_are_not_swallowed() -> None:
     """Only BridgeError is converted; a real bug must still surface."""
 

@@ -19,6 +19,35 @@ from typing import Any, cast
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 9875
 
+# The bridge is unauthenticated and binds loopback. FREECAD_AI_HOST exists so
+# the value is visible and testable, but widening it hands anyone who can reach
+# the port full control of FreeCAD — do not use it to expose this.
+ENV_HOST = "FREECAD_AI_HOST"
+ENV_PORT = "FREECAD_AI_PORT"
+
+
+def configured_host() -> str:
+    """Host to bind, from ``FREECAD_AI_HOST`` or the loopback default."""
+    return os.environ.get(ENV_HOST) or DEFAULT_HOST
+
+
+def configured_port() -> int:
+    """Port to bind, from ``FREECAD_AI_PORT`` or the default.
+
+    Read at call time rather than at import so tests and a caller can change
+    it, and so a malformed value is reported where it can be acted on.
+    """
+    raw = os.environ.get(ENV_PORT)
+    if not raw:
+        return DEFAULT_PORT
+    try:
+        port = int(raw)
+    except ValueError as error:
+        raise BridgeError(f"{ENV_PORT}={raw!r} is not an integer") from error
+    if not 1 <= port <= 65535:
+        raise BridgeError(f"{ENV_PORT}={port} is outside 1-65535")
+    return port
+
 # freecadcmd is not on PATH; both 1.0 and 1.1 are installed side by side, so an
 # unqualified path silently binds the wrong one.
 FREECAD_1_1_BIN = Path(r"C:\Program Files\FreeCAD 1.1\bin")
@@ -139,9 +168,17 @@ class Bridge:
     single-threaded too, so this matches the server rather than fighting it.
     """
 
-    def __init__(self, host: str = DEFAULT_HOST, port: int = DEFAULT_PORT) -> None:
+    def __init__(
+        self,
+        host: str | None = None,
+        port: int | None = None,
+    ) -> None:
+        resolved_host = host if host is not None else configured_host()
+        resolved_port = port if port is not None else configured_port()
+        self.host = resolved_host
+        self.port = resolved_port
         self._proxy = xmlrpc.client.ServerProxy(
-            f"http://{host}:{port}/", allow_none=False
+            f"http://{resolved_host}:{resolved_port}/", allow_none=False
         )
         self._lock = threading.Lock()
 

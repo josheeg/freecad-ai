@@ -95,13 +95,20 @@ def _tool(name: str, description: str) -> Callable[[Callable[P, R]], Callable[P,
     def decorator(func: Callable[P, R]) -> Callable[P, R]:
         def wrapper(*args: P.args, **kwargs: P.kwargs) -> Any:
             try:
-                return func(*args, **kwargs)
+                result = func(*args, **kwargs)
             except BridgeError as error:
                 return {
                     "error": str(error),
                     "kind": type(error).__name__,
                     "hint": getattr(error, "hint", ""),
                 }
+            # MCPServer's result conversion treats a list as a sequence of
+            # content blocks and chains them, so a tool returning a list
+            # silently reports only its first element. Wrapping here means no
+            # tool can reintroduce that by passing a bridge value through.
+            if isinstance(result, list):
+                return {"items": result}
+            return result
 
         functools.update_wrapper(wrapper, func)
         # Publish the original signature, but with a widened return type.
@@ -144,14 +151,18 @@ def save_document(name: str, path: str) -> str:
     return get_bridge().save_document(name, path)
 
 
-@_tool("list_documents", "List open document names.")
-def list_documents() -> list[str]:
-    return get_bridge().list_documents()
+@_tool("list_documents", "List the names of open documents.")
+def list_documents() -> dict[str, Any]:
+    # Wrapped in a dict on purpose. MCPServer's result conversion treats a bare
+    # list as a sequence of content blocks and chains them together, so a tool
+    # returning a list of values silently reports only its first element. A dict
+    # is JSON-encoded whole.
+    return {"documents": get_bridge().list_documents()}
 
 
 @_tool("list_objects", "List objects in a document with name, label and type.")
-def list_objects(document: str) -> list[dict[str, Any]]:
-    return get_bridge().list_objects(document)
+def list_objects(document: str) -> dict[str, Any]:
+    return {"objects": get_bridge().list_objects(document)}
 
 
 @_tool("add_primitive", "Add a Part primitive. kind is a FreeCAD TypeId.")

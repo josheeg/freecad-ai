@@ -6,6 +6,8 @@ Deselect while iterating:  ``uv run pytest -m "not integration"``.
 
 from __future__ import annotations
 
+import asyncio
+import json
 import subprocess
 import uuid
 from collections.abc import Iterator
@@ -186,6 +188,42 @@ def test_boolean_result_is_exportable(
     target = tmp_path / "drilled.step"
     bridge.export_object(drilled, "Exportable", str(target))
     assert target.stat().st_size > 0
+
+
+@pytest.mark.integration
+def test_list_results_survive_server_conversion() -> None:
+    """A multi-element result must reach the model intact.
+
+    Calling the Bridge directly is not enough: the server layer re-encodes
+    results, and a bare list is treated as a sequence of content blocks, so
+    only the first element survives. This exercises the real path.
+    """
+    from freecad_ai.server import server
+
+    async def run() -> None:
+        await server.call_tool("new_document", {"name": "wraptest"})
+        for i in range(3):
+            await server.call_tool(
+                "add_primitive",
+                {
+                    "document": "wraptest",
+                    "kind": "Part::Box",
+                    "object_name": f"W{i}",
+                    "dimensions": {"Length": 10.0},
+                },
+            )
+        result = await server.call_tool("list_objects", {"document": "wraptest"})
+        payload = json.loads(result.content[0].text)
+        assert isinstance(payload, dict), f"got {type(payload).__name__}, want dict"
+        assert len(payload["objects"]) == 3, payload
+        assert {o["name"] for o in payload["objects"]} == {"W0", "W1", "W2"}
+
+        docs = json.loads(
+            (await server.call_tool("list_documents", {})).content[0].text
+        )
+        assert "wraptest" in docs["documents"]
+
+    asyncio.run(run())
 
 
 @pytest.mark.integration

@@ -48,9 +48,9 @@ itself launches instantly. It runs headless — no GUI instance is started.
 | `connect` | Start FreeCAD if needed and report its version |
 | `new_document` | Create a document, or return the existing one (`reuse=False` to insist) |
 | `open_document` / `save_document` | Document lifecycle |
-| `list_documents` | List open documents |
+| `list_documents` | List open documents — returns `{"documents": [...]}` |
 | `add_primitive` | Add a Part primitive (`Part::Box`, `Part::Cylinder`, …) |
-| `list_objects` | Objects in a document, with name, label and type |
+| `list_objects` | Objects in a document — returns `{"objects": [...]}` |
 | `get_properties` / `set_property` | Read and write object properties |
 | `remove_object` | Remove an object |
 | `boolean_op` | cut, fuse or common two objects into a new feature |
