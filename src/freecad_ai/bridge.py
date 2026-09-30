@@ -24,6 +24,18 @@ DEFAULT_PORT = 9875
 # the port full control of FreeCAD — do not use it to expose this.
 ENV_HOST = "FREECAD_AI_HOST"
 ENV_PORT = "FREECAD_AI_PORT"
+ENV_FREECAD_BIN = "FREECAD_AI_FREECAD_BIN"
+
+# freecadcmd is not on PATH, and both 1.0 and 1.1 are installed side by side,
+# so an unqualified path silently binds the wrong one. CI installs FreeCAD
+# elsewhere, hence the override.
+DEFAULT_FREECAD_BIN = Path(r"C:\Program Files\FreeCAD 1.1\bin")
+
+
+def configured_freecad_bin() -> Path:
+    """Directory holding ``freecadcmd.exe``, from the environment or default."""
+    override = os.environ.get(ENV_FREECAD_BIN)
+    return Path(override) if override else DEFAULT_FREECAD_BIN
 
 
 def configured_host() -> str:
@@ -230,6 +242,10 @@ class Bridge:
             str, self._call("add_primitive", name, kind, object_name, dimensions)
         )
 
+    def instance_pid(self) -> int:
+        """PID of the FreeCAD process actually serving this bridge."""
+        return int(cast("dict[str, Any]", self._call("instance_id"))["pid"])
+
     def list_primitive_types(self) -> list[dict[str, Any]]:
         return cast("list[dict[str, Any]]", self._call("list_primitive_types"))
 
@@ -316,11 +332,21 @@ def wait_until_ready(
     raise BridgeError(f"bridge did not become ready within {timeout}s: {last}")
 
 
+class PortInUse(BridgeError):
+    """The port is held by a FreeCAD that is not the one we launched."""
+
+    hint = (
+        "Another FreeCAD is already using this port, so the one started here "
+        "could not bind. Set FREECAD_AI_PORT to a free port, or stop the "
+        "other instance."
+    )
+
+
 def freecadcmd_path() -> Path:
-    """Full path to FreeCAD 1.1's console binary."""
-    candidate = FREECAD_1_1_BIN / "freecadcmd.exe"
+    """Full path to FreeCAD's console binary."""
+    candidate = configured_freecad_bin() / "freecadcmd.exe"
     if not candidate.is_file():
-        raise BridgeError(f"FreeCAD 1.1 not found at {candidate}")
+        raise BridgeError(f"freecadcmd.exe not found at {candidate}")
     return candidate
 
 
@@ -362,9 +388,23 @@ def start_headless(
         creationflags=creationflags,
     )
     try:
-        bridge = wait_until_ready(host, port, timeout)
+        bridge = wait_until_ready(resolved_host, resolved_port, timeout)
+        # Confirm the bridge we reached is the process we launched. If the port
+        # was already held, our FreeCAD failed to bind and wait_until_ready
+        # answered from that other process — adopting it would hand the model
+        # someone else's open documents.
+        served_by = bridge.instance_pid()
+        if served_by != process.pid:
+            raise PortInUse(
+                f"port {resolved_port} is served by FreeCAD pid {served_by}, "
+                f"not the pid {process.pid} started here"
+            )
     except BridgeError:
         process.terminate()
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
         raise
     return process, bridge
 

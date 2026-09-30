@@ -24,6 +24,7 @@ from freecad_ai.bridge import (
     ExportFailed,
     NoSuchDimension,
     ObjectNotFound,
+    PortInUse,
     start_headless,
     stop,
 )
@@ -310,6 +311,32 @@ def test_primitive_catalogue_matches_what_can_be_added(bridge: Bridge) -> None:
         document = bridge.new_document(f"cat{index}")["name"]
         name = f"T{index}"
         assert bridge.add_primitive(document, entry["type"], name, {}) == name
+
+
+@pytest.mark.integration
+def test_refuses_to_adopt_a_foreign_freecad() -> None:
+    """A busy port must fail, not silently hand over someone else's session.
+
+    If another FreeCAD already holds the port, the one launched here cannot
+    bind and a readiness ping answers from the incumbent — so the client would
+    adopt it along with its open documents. Verified by pid.
+    """
+    incumbent, other = start_headless(HOST, PORT + 3, timeout=60.0)
+    try:
+        other.new_document("SOMEONE_ELSES_WORK")
+        with pytest.raises(PortInUse, match="not the pid"):
+            start_headless(HOST, PORT + 3, timeout=20.0)
+    finally:
+        stop(incumbent)
+
+
+@pytest.mark.integration
+def test_connected_bridge_is_the_process_we_started() -> None:
+    process, bridge = start_headless(HOST, PORT + 4, timeout=60.0)
+    try:
+        assert bridge.instance_pid() == process.pid
+    finally:
+        stop(process)
 
 
 @pytest.mark.integration

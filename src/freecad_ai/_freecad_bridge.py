@@ -370,6 +370,19 @@ def _parametric_properties(obj: Any) -> list[str]:
     ]
 
 
+def instance_id() -> dict[str, Any]:
+    """Identify this FreeCAD process.
+
+    The client must not assume the bridge it reached is the one it launched.
+    If another FreeCAD already holds the port, a launch here fails to bind
+    and the client would otherwise adopt that other process — and with it
+    someone else's documents. The pid lets the client detect that.
+    """
+    import os
+
+    return {"pid": os.getpid()}
+
+
 def list_primitive_types() -> list[dict[str, Any]]:
     """Enumerate creatable Part types and the properties each one takes.
 

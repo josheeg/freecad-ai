@@ -196,6 +196,23 @@ def test_freecad_output_streams_are_never_piped(monkeypatch: Any) -> None:
     assert captured["stderr"] is subprocess.DEVNULL
 
 
+def test_freecad_bin_path_is_configurable(monkeypatch: Any) -> None:
+    """CI installs FreeCAD elsewhere, so the path must not be hardcoded."""
+    monkeypatch.delenv(bridge_module.ENV_FREECAD_BIN, raising=False)
+    assert bridge_module.configured_freecad_bin() == bridge_module.DEFAULT_FREECAD_BIN
+
+    monkeypatch.setenv(bridge_module.ENV_FREECAD_BIN, r"C:\fc\bin")
+    assert bridge_module.configured_freecad_bin() == Path(r"C:\fc\bin")
+    with pytest.raises(BridgeError, match=r"freecadcmd\.exe not found"):
+        bridge_module.freecadcmd_path()
+
+
+def test_missing_freecad_is_reported_clearly(monkeypatch: Any) -> None:
+    monkeypatch.setenv(bridge_module.ENV_FREECAD_BIN, r"C:\definitely\not\here")
+    with pytest.raises(BridgeError, match=r"freecadcmd\.exe not found"):
+        bridge_module.freecadcmd_path()
+
+
 def test_fault_codes_map_to_typed_errors() -> None:
     """Each bridge fault code must raise its own exception class.
 
