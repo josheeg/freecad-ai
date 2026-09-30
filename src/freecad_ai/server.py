@@ -380,6 +380,128 @@ def linear_array(
 
 
 @_tool(
+    "add_sketch",
+    "Create an empty 2D sketch. Replaces an existing sketch of the same name; "
+    "fails if the name belongs to a non-sketch object. The sketch starts on the "
+    "XY plane — move it with `set_placement`, like any other object.",
+)
+def add_sketch(document: str, sketch_name: str) -> str:
+    return get_bridge().add_sketch(document, sketch_name)
+
+
+@_tool(
+    "add_sketch_line",
+    "Add a line segment to a sketch, from (x1,y1) to (x2,y2) in the sketch "
+    "plane. Returns the new 1-based geometry index.",
+)
+def add_sketch_line(
+    document: str,
+    sketch_name: str,
+    x1: float,
+    y1: float,
+    x2: float,
+    y2: float,
+) -> dict[str, Any]:
+    return get_bridge().add_sketch_line(document, sketch_name, x1, y1, x2, y2)
+
+
+@_tool(
+    "add_sketch_arc",
+    "Add an arc to a sketch: centre (cx,cy), radius, and start/end angles in "
+    "degrees measured counter-clockwise from +X. A mis-spanned arc is the usual "
+    "reason a profile fails to close, so check `sketch_status` afterwards.",
+)
+def add_sketch_arc(
+    document: str,
+    sketch_name: str,
+    cx: float,
+    cy: float,
+    radius: float,
+    start_angle: float,
+    end_angle: float,
+) -> dict[str, Any]:
+    return get_bridge().add_sketch_arc(
+        document, sketch_name, cx, cy, radius, start_angle, end_angle
+    )
+
+
+@_tool(
+    "add_sketch_circle",
+    "Add a full circle to a sketch, centred at (cx,cy) with the given radius.",
+)
+def add_sketch_circle(
+    document: str,
+    sketch_name: str,
+    cx: float,
+    cy: float,
+    radius: float,
+) -> dict[str, Any]:
+    return get_bridge().add_sketch_circle(document, sketch_name, cx, cy, radius)
+
+
+@_tool(
+    "remove_sketch_geometry",
+    "Remove one piece of sketch geometry by its 1-based index. FreeCAD "
+    "renumbers the rest, so re-read the indices afterwards.",
+)
+def remove_sketch_geometry(
+    document: str,
+    sketch_name: str,
+    index: int,
+) -> dict[str, Any]:
+    return get_bridge().remove_sketch_geometry(document, sketch_name, index)
+
+
+@_tool(
+    "add_sketch_constraint",
+    "Constrain a sketch. kind is Coincident, Horizontal, Vertical, Parallel, "
+    "Perpendicular, Equal or Distance; only Distance uses value. NOTE: `first` "
+    "and `second` are 0-based geometry indices, as FreeCAD numbers them — "
+    "unlike the 1-based indices used by every other tool here.",
+)
+def add_sketch_constraint(
+    document: str,
+    sketch_name: str,
+    kind: str,
+    first: int = 0,
+    first_pos: int = 1,
+    second: int = 0,
+    second_pos: int = 2,
+    value: float = 0.0,
+) -> dict[str, Any]:
+    return get_bridge().add_sketch_constraint(
+        document, sketch_name, kind, first, first_pos, second, second_pos, value
+    )
+
+
+@_tool(
+    "sketch_status",
+    "Report a sketch's geometry count, whether its outline is closed, its area, "
+    "and remaining degrees of freedom. CHECK `closed` BEFORE calling "
+    "`extrude_sketch`: an unclosed profile does not fail at extrude time, it "
+    "silently produces a wrong solid. Area is 0.0 for an unclosed profile.",
+)
+def sketch_status(document: str, sketch_name: str) -> dict[str, Any]:
+    return get_bridge().sketch_status(document, sketch_name)
+
+
+@_tool(
+    "extrude_sketch",
+    "Extrude a CLOSED sketch profile into a solid, `depth` deep, normal to the "
+    "sketch plane. Direction is set by the sketch's placement, not by an "
+    "argument. Refuses an unclosed profile rather than returning a wrong "
+    "solid — call `sketch_status` first.",
+)
+def extrude_sketch(
+    document: str,
+    sketch_name: str,
+    result_name: str,
+    depth: float,
+) -> str:
+    return get_bridge().extrude_sketch(document, sketch_name, result_name, depth)
+
+
+@_tool(
     "boolean_op",
     "Combine two objects into a new one. operation is cut, fuse or common. "
     "Both inputs are kept; the result is a new parametric feature.",

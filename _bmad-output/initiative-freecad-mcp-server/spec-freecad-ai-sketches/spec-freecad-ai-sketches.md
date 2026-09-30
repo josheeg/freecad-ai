@@ -109,13 +109,31 @@ the profile's area times the depth.
 
 ## Open Questions
 
-- Should extrusion expose `DirMode` (normal, edge, custom) as caller-facing
-  arguments, or fix it to normal-plus-length and add a separate tool for
-  direction? Normal-only is a smaller surface; a swept profile along an edge
-  is a real modelling need.
-- Should sketch geometry be addressable by a stable caller-supplied name, or
-  only by index? Index is what the rest of the surface uses, but editing
-  geometry renumbers indices, which makes a stored reference wrong.
-- Is `PartDesign::Pad` worth exposing alongside `Part::Extrusion` for callers
-  who want a Body in their document, given it emitted an out-of-scope warning
-  even when it succeeded?
+All three are settled. Recorded as decisions rather than left open.
+
+- **Extrusion direction is not an argument.** `extrude_sketch` takes a depth
+  and nothing else; the sketch's own `Placement` decides which way is out. One
+  rule for orientation rather than two that can disagree, and it routes through
+  the same `set_placement` every other object uses. A swept profile along an
+  edge would be a new capability, not a parameter.
+- **Geometry is addressed by index only**, matching `describe_geometry`,
+  `boolean_op` and `fillet`. A caller-supplied name would be a second
+  convention alongside every index-based tool, and FreeCAD renumbers indices on
+  removal anyway. `remove_sketch_geometry`'s description says so.
+- **Only `Part::Extrusion` is exposed.** `PartDesign::Pad` produced the same
+  volume but printed an out-of-scope warning *on success*, so its correctness
+  cannot be inferred from a clean exit. One way to make a solid is worth more
+  than two, one of which is noisier.
+
+## Notes from building it
+
+- `Sketcher.Constraint` built with six arguments — the value form applied to a
+  two-element constraint — **terminates FreeCAD** rather than raising. The
+  four-argument form returns normally. `add_sketch_constraint` now picks the
+  arity per kind and rejects an unknown `kind` before constructing anything, so
+  a bad argument cannot take the bridge process down with it.
+- A `Part::Extrusion` takes the sketch's placement **at the moment it is
+  created**. Moving the sketch afterwards does not move a solid already
+  extruded, so a profile must be extruded after it is positioned.
+- A rectangle swept into a box has 12 edges and 6 faces, not 4 — each side is
+  split where the corners meet. Measured, and asserted as measured.

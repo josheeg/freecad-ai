@@ -36,3 +36,30 @@ MCP server that lets an AI assistant drive FreeCAD 1.1. Python, `uv`, packaged w
 - FreeCAD is not on PyPI (verified: 404). Never add it as a dependency; it is an external process, not an import.
 
 <!-- /bmad:context -->
+
+## Governing artifacts
+
+Outside the managed block on purpose — a `bmad-project-context` refresh
+replaces everything between the markers, which would take this with it.
+
+- **Spec** — `_bmad-output/initiative-freecad-mcp-server/spec-freecad-ai-server/spec-freecad-ai-server.md`,
+  with `tool-surface.md`, `failure-modes.md` and `conventions.md` alongside it.
+  Eight capabilities, CAP-1…CAP-8. Read this before changing what a tool does.
+- **Sketch spec** — `_bmad-output/initiative-freecad-mcp-server/spec-freecad-ai-sketches/spec-freecad-ai-sketches.md`,
+  with `sketch-surface.md` and `sketch-traps.md`. Seven capabilities, CAP-S1…CAP-S7,
+  for 2D profiles to solids. Built: `add_sketch`, `add_sketch_line`, `add_sketch_arc`,
+  `add_sketch_circle`, `remove_sketch_geometry`, `add_sketch_constraint`,
+  `sketch_status`, `extrude_sketch`. Check `sketch_status` before `extrude_sketch` —
+  an unclosed profile extrudes to a *wrong solid* rather than failing.
+- **Spine** — `_bmad-output/initiative-freecad-mcp-server/architecture-freecad-ai-server/architecture-freecad-ai-server.md`.
+  Twenty-two numbered decisions, AD-1…AD-22, each with the failure it prevents.
+  **These are binding.** A change that contradicts an AD is either a new AD or
+  an explicit decision to retire one — not a quiet divergence. The spine's own
+  "What this document governs" section says which rules are load-bearing; the
+  Conventions section there is advisory, and promoting one to an AD is a
+  deliberate act.
+
+The spec records *what* the system does; the spine records *which decisions
+were forced* and are therefore not yours to re-make. Code shows the third
+layer. Read in that order when the question is "may I do this?" and start at
+the spine.

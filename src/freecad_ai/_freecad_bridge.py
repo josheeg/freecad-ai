@@ -48,6 +48,11 @@ FAULT_BAD_OPERATION = 109
 FAULT_BAD_GEOMETRY = 110
 FAULT_NO_SUCH_FEATURE = 111
 FAULT_EMPTY_RESULT = 112
+# Sketch-specific. Kept in the same allocated range so the client's registry
+# test covers them with no special case.
+FAULT_PROFILE_NOT_CLOSED = 113
+FAULT_NOT_A_SKETCH = 114
+FAULT_NO_SUCH_CONSTRAINT = 115
 
 # FreeCAD 1.1 has no generic Part::Boolean; each operation is its own
 # parametric feature type with Base and Tool links. Verified against 1.1.3.
@@ -870,6 +875,420 @@ def shape_summary(name: str, object_name: str) -> dict[str, Any]:
         "area": shape.Area,
         "bbox": [box.XMin, box.YMin, box.ZMin, box.XMax, box.YMax, box.ZMax],
     }
+
+
+# ---------------------------------------------------------------------------
+# Sketches
+#
+# Probed against FreeCAD 1.1.3 before this was written; the findings that
+# shaped it are in spec-freecad-ai-sketches/sketch-traps.md. Three matter:
+#
+#   A sketch's Shape.Area is 0.0 even for a closed profile, because a wire is
+#   not a face. Area below comes from Part.Face(wire) instead.
+#
+#   An unclosed profile does not fail loudly. Part::Extrusion with Solid=True
+#   over an open wire returned a shape rather than an error, with edges that
+#   did not match the geometry drawn. So closedness is checked explicitly here
+#   rather than left to the extruder.
+#
+#   Every Draft::* type raises TypeError in this build, so nothing here may
+#   reach for one. The same conclusion AD-21 reached for arrays.
+# ---------------------------------------------------------------------------
+
+_SKETCH_TYPE = "Sketcher::SketchObject"
+
+
+def _sketch(document: str, object_name: str) -> Any:
+    """Resolve an object and require it to be a sketch.
+
+    Checked by type rather than assumed, because most of these functions would
+    otherwise raise an opaque AttributeError from inside FreeCAD, which
+    xmlrpc reports as the generic internal fault.
+    """
+    obj = _object(_require(document), object_name)
+    if obj.TypeId != _SKETCH_TYPE:
+        _fail(
+            FAULT_NOT_A_SKETCH,
+            f"{object_name} is a {obj.TypeId}, not a {_SKETCH_TYPE}",
+        )
+    return obj
+
+
+def _number(value: Any, what: str) -> float:
+    """Coerce a caller-supplied dimension, refusing bools and non-numbers.
+
+    A bool is an int in Python, so `add_sketch_circle(..., radius=True)` would
+    otherwise silently become a 1mm circle.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        _fail(FAULT_BAD_GEOMETRY, f"{what} must be a number, got {value!r}")
+        return 0.0
+    return float(value)
+
+
+def _profile_wire(sketch: Any) -> Any:
+    """The sketch's single closed wire, or a fault naming what is wrong.
+
+    Probed: an unclosed profile produced a shape on extrude rather than an
+    error, so this is the check that stands between a caller and a plausible
+    wrong solid.
+    """
+    shape = sketch.Shape
+    if shape.isNull():
+        _fail(
+            FAULT_PROFILE_NOT_CLOSED,
+            f"{sketch.Name} has no geometry yet; add some with "
+            f"add_sketch_line, add_sketch_arc or add_sketch_circle",
+        )
+    wires = shape.Wires
+    if not wires:
+        _fail(FAULT_PROFILE_NOT_CLOSED, f"{sketch.Name} produced no wire")
+    if len(wires) > 1:
+        _fail(
+            FAULT_BAD_GEOMETRY,
+            f"{sketch.Name} has {len(wires)} separate wires; a profile must be "
+            f"a single connected outline",
+        )
+    wire = wires[0]
+    if not wire.isClosed():
+        # Name the gap: the caller needs to know which edges fail to meet.
+        open_ends = []
+        for vertex in wire.OrderedVertexes:
+            open_ends.append([round(vertex.Point.x, 4), round(vertex.Point.y, 4)])
+        _fail(
+            FAULT_PROFILE_NOT_CLOSED,
+            f"{sketch.Name} is not a closed profile: its wire has "
+            f"{len(wire.OrderedEdges)} edges and {len(open_ends)} vertices "
+            f"that do not meet end to end. Endpoints, in order: "
+            f"{open_ends[:8]}. A sketch can only be extruded once its outline "
+            f"closes.",
+        )
+    return wire
+
+
+def add_sketch(document: str, sketch_name: str) -> str:
+    """Create an empty sketch, replacing any existing one of that name.
+
+    Idempotent like new_document: agents retry names constantly, and an error
+    every time is noise rather than information.
+    """
+    doc = _require(document)
+    existing = doc.getObject(sketch_name)
+    if existing is not None:
+        if existing.TypeId == _SKETCH_TYPE:
+            doc.removeObject(existing.Name)
+            doc.recompute()
+        else:
+            _fail(
+                FAULT_NOT_A_SKETCH,
+                f"{sketch_name} already exists and is a {existing.TypeId}",
+            )
+    try:
+        sketch = doc.addObject(_SKETCH_TYPE, sketch_name)
+    except Exception as error:
+        _fail(FAULT_NO_SUCH_FEATURE, f"cannot create a sketch: {error}")
+        return ""  # unreachable
+    doc.recompute()
+    return sketch.Name
+
+
+def add_sketch_line(
+    document: str,
+    sketch_name: str,
+    x1: float,
+    y1: float,
+    x2: float,
+    y2: float,
+) -> dict[str, Any]:
+    """Add a line segment between two points in the sketch plane."""
+    import FreeCAD
+    import Part
+
+    doc = _require(document)
+    sketch = _sketch(document, sketch_name)
+    start = FreeCAD.Vector(_number(x1, "x1"), _number(y1, "y1"), 0.0)
+    end = FreeCAD.Vector(_number(x2, "x2"), _number(y2, "y2"), 0.0)
+    if start.distanceToPoint(end) < 1e-9:
+        _fail(FAULT_BAD_GEOMETRY, "a line needs two distinct points")
+    sketch.addGeometry(Part.LineSegment(start, end), False)
+    doc.recompute()
+    return {"geometry_count": sketch.GeometryCount, "index": sketch.GeometryCount}
+
+
+def add_sketch_arc(
+    document: str,
+    sketch_name: str,
+    cx: float,
+    cy: float,
+    radius: float,
+    start_angle: float,
+    end_angle: float,
+) -> dict[str, Any]:
+    """Add an arc of a circle, in degrees, counter-clockwise from +X.
+
+    Angles are degrees to match the placement convention AD-19 fixed. A
+    mis-spanned arc is the usual way a profile fails to close, which
+    sketch_status reports rather than leaving the caller to discover it at
+    extrude time.
+    """
+    import math
+
+    import FreeCAD
+    import Part
+
+    doc = _require(document)
+    sketch = _sketch(document, sketch_name)
+    r = _number(radius, "radius")
+    if r <= 0:
+        _fail(FAULT_BAD_GEOMETRY, f"radius must be positive, got {r}")
+    centre = FreeCAD.Vector(_number(cx, "cx"), _number(cy, "cy"), 0.0)
+    start_rad = math.radians(_number(start_angle, "start_angle"))
+    end_rad = math.radians(_number(end_angle, "end_angle"))
+    if abs(start_rad - end_rad) < 1e-9:
+        _fail(
+            FAULT_BAD_GEOMETRY,
+            "start_angle and end_angle must differ; equal angles give a "
+            "zero-length arc",
+        )
+    circle = Part.Circle(centre, FreeCAD.Vector(0, 0, 1), r)
+    sketch.addGeometry(Part.ArcOfCircle(circle, start_rad, end_rad), False)
+    doc.recompute()
+    return {"geometry_count": sketch.GeometryCount, "index": sketch.GeometryCount}
+
+
+def add_sketch_circle(
+    document: str,
+    sketch_name: str,
+    cx: float,
+    cy: float,
+    radius: float,
+) -> dict[str, Any]:
+    """Add a full circle, in the sketch plane."""
+    import FreeCAD
+    import Part
+
+    doc = _require(document)
+    sketch = _sketch(document, sketch_name)
+    r = _number(radius, "radius")
+    if r <= 0:
+        _fail(FAULT_BAD_GEOMETRY, f"radius must be positive, got {r}")
+    centre = FreeCAD.Vector(_number(cx, "cx"), _number(cy, "cy"), 0.0)
+    sketch.addGeometry(Part.Circle(centre, FreeCAD.Vector(0, 0, 1), r), False)
+    doc.recompute()
+    return {"geometry_count": sketch.GeometryCount, "index": sketch.GeometryCount}
+
+
+def remove_sketch_geometry(
+    document: str,
+    sketch_name: str,
+    index: int,
+) -> dict[str, Any]:
+    """Remove one geometry by its 1-based index.
+
+    Indices are renumbered by FreeCAD after a removal, which is why nothing in
+    the surface stores one: describe_geometry reports the current numbering.
+    """
+    doc = _require(document)
+    sketch = _sketch(document, sketch_name)
+    if isinstance(index, bool) or not isinstance(index, int):
+        _fail(FAULT_BAD_GEOMETRY, f"index must be an integer, got {index!r}")
+    if not 1 <= index <= sketch.GeometryCount:
+        _fail(
+            FAULT_BAD_GEOMETRY,
+            f"{sketch_name} has {sketch.GeometryCount} geometries, so "
+            f"{index} does not exist",
+        )
+    sketch.delGeometry(index - 1)
+    doc.recompute()
+    return {"geometry_count": sketch.GeometryCount}
+
+
+def add_sketch_constraint(
+    document: str,
+    sketch_name: str,
+    kind: str,
+    first: int,
+    first_pos: int,
+    second: int,
+    second_pos: int,
+    value: float,
+) -> dict[str, Any]:
+    """Add a constraint between two geometry elements.
+
+    ``kind`` is a FreeCAD constraint name: Coincident, Horizontal, Vertical,
+    Parallel, Perpendicular, Equal, or Distance. Distance is the only one that
+    uses ``value``; the others take two elements and ignore it.
+
+    Element indices are 0-based, as FreeCAD numbers them internally, while
+    geometry indices elsewhere in this surface are 1-based. That inconsistency
+    is FreeCAD's, not this tool's, and the hint says so.
+    """
+    import FreeCAD  # noqa: F401  (imported so a missing module fails as a fault)
+    import Sketcher
+
+    doc = _require(document)
+    sketch = _sketch(document, sketch_name)
+    count = sketch.GeometryCount
+    for label, value_ in (("first", first), ("second", second)):
+        if isinstance(value_, bool) or not isinstance(value_, int):
+            _fail(FAULT_BAD_GEOMETRY, f"{label} must be an integer, got {value_!r}")
+        if not 0 <= value_ < count:
+            _fail(
+                FAULT_BAD_GEOMETRY,
+                f"{label} geometry {value_} does not exist; {sketch_name} has "
+                f"{count}. FreeCAD numbers geometry from 0 here, unlike the "
+                f"1-based edge and geometry numbers used elsewhere.",
+            )
+    # An unknown kind is rejected before any Constraint is built. Building one
+    # with the wrong arity does not raise - it terminates FreeCAD, which would
+    # take the bridge down and orphan the document with it.
+    _CONSTRAINT_KINDS = {
+        "Coincident",
+        "Horizontal",
+        "Vertical",
+        "Parallel",
+        "Perpendicular",
+        "Equal",
+        "Distance",
+    }
+    if kind not in _CONSTRAINT_KINDS:
+        _fail(
+            FAULT_BAD_GEOMETRY,
+            f"unknown constraint kind {kind!r}; use one of "
+            f"{', '.join(sorted(_CONSTRAINT_KINDS))}",
+        )
+
+    try:
+        if kind == "Distance":
+            constraint = Sketcher.Constraint(
+                kind, first, first_pos, second, second_pos, value
+            )
+        else:
+            # Passing the value argument to a two-element constraint CRASHES
+            # FreeCAD outright rather than raising, which takes the whole
+            # bridge process down with it. Verified against 1.1.3: the 4-arg
+            # form returns a Constraint, the 6-arg form kills the interpreter.
+            constraint = Sketcher.Constraint(kind, first, first_pos, second, second_pos)
+    except Exception as error:
+        _fail(
+            FAULT_BAD_GEOMETRY,
+            f"cannot build a {kind} constraint: {error}. Valid kinds include "
+            f"Coincident, Horizontal, Vertical, Parallel, Perpendicular, "
+            f"Equal, Distance.",
+        )
+        return {}  # unreachable
+    index = sketch.addConstraint(constraint)
+    doc.recompute()
+    dof = sketch.solve()
+    return {
+        "constraint_index": index,
+        "constraint_count": sketch.ConstraintCount,
+        "dof": dof,
+        "fully_constrained": bool(sketch.FullyConstrained),
+        # A negative dof means the sketch is over-constrained, which FreeCAD
+        # reports rather than refuses. Surfaced because the constraint was
+        # still added: the caller needs to know it is now fighting itself.
+        "over_constrained": dof < 0,
+    }
+
+
+def sketch_status(document: str, sketch_name: str) -> dict[str, Any]:
+    """Report whether a profile is closed and usable, before extruding it.
+
+    Exists because an unclosed profile does not fail at extrude time - it
+    produces a wrong solid instead. ``closed`` is the thing to check first, and
+    ``extrude_sketch`` refuses a profile where it is false.
+    """
+    import Part
+
+    sketch = _sketch(document, sketch_name)
+    shape = sketch.Shape
+    geometry_count = sketch.GeometryCount
+
+    result: dict[str, Any] = {
+        "sketch": sketch_name,
+        "geometry_count": geometry_count,
+        "closed": False,
+        "edge_count": 0,
+        "area": 0.0,
+        "dof": 0,
+        "fully_constrained": False,
+        "over_constrained": False,
+    }
+    if geometry_count == 0 or shape.isNull():
+        return result
+
+    wires = shape.Wires
+    result["edge_count"] = len(shape.Edges)
+    result["wire_count"] = len(wires)
+    result["dof"] = sketch.solve()
+    result["fully_constrained"] = bool(sketch.FullyConstrained)
+    result["over_constrained"] = result["dof"] < 0
+
+    if len(wires) == 1 and wires[0].isClosed():
+        result["closed"] = True
+        # Part.Face, because the sketch's own Shape.Area is 0.0 for a wire.
+        try:
+            result["area"] = Part.Face(Part.Wire(wires[0].Edges)).Area
+        except Exception:
+            result["area"] = 0.0
+    return result
+
+
+def extrude_sketch(
+    document: str,
+    sketch_name: str,
+    result_name: str,
+    depth: float,
+) -> str:
+    """Extrude a closed profile into a solid, normal to the sketch plane.
+
+    Direction is not a parameter: the sketch's own Placement decides which way
+    is out, and it is set with the same set_placement every other object uses.
+    One rule for orientation rather than two that can disagree.
+
+    Uses Part::Extrusion rather than PartDesign::Pad. Both were verified to
+    produce the same volume, but Pad printed an out-of-scope warning even on
+    success, so its correctness cannot be inferred from a clean exit.
+    """
+    doc = _require(document)
+    sketch = _sketch(document, sketch_name)
+    length = _number(depth, "depth")
+    if length == 0:
+        _fail(FAULT_BAD_GEOMETRY, "depth must not be zero")
+    if length < 0:
+        _fail(
+            FAULT_BAD_GEOMETRY,
+            f"depth must be positive; reverse the sketch placement instead of "
+            f"extruding by a negative amount, got {length}",
+        )
+
+    # The check that matters. Without it this returns a wrong solid silently.
+    _profile_wire(sketch)
+
+    feature = _feature(result_name, "Part::Extrusion", document)
+    feature.Base = sketch
+    feature.DirMode = "Normal"
+    feature.LengthFwd = length
+    feature.Solid = True
+    doc.recompute()
+
+    shape = feature.Shape
+    if shape.isNull() or not shape.Solids:
+        _fail(
+            FAULT_EMPTY_RESULT,
+            f"extruding {sketch_name} by {length} produced no solid; the "
+            f"profile may be self-intersecting or degenerate. Check "
+            f"sketch_status.",
+        )
+    if len(shape.Solids) > 1:
+        _fail(
+            FAULT_BAD_GEOMETRY,
+            f"extruding {sketch_name} produced {len(shape.Solids)} separate "
+            f"solids, which means the profile is not a single connected "
+            f"outline. Check sketch_status.",
+        )
+    return feature.Name
 
 
 def _dispatch(name: str, *args: Any) -> Any:

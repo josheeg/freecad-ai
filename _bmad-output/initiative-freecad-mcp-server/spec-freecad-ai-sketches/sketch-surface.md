@@ -1,7 +1,7 @@
 # Sketch tool surface
 
-The tools this spec adds. All are **additive** — the existing 24 are unchanged.
-Names are provisional pending the open questions on direction and addressing.
+The eight tools this spec adds. All are **additive** — the existing 24 are
+unchanged, and a sketch-derived solid is an ordinary object to all of them.
 
 Every sketch tool takes `document` and `sketch` names, not handles, consistent
 with AD-8. Geometry is described in the server's own terms and constructed on
@@ -76,3 +76,16 @@ matching the degree convention AD-19 fixed for placements. Angles are measured
 counter-clockwise from the positive X axis in the sketch's plane. This is the
 one place a caller can silently get a profile that does not close, so
 `sketch_status` reports closedness and `extrude_sketch` refuses an open profile.
+
+## Order matters when extruding
+
+A `Part::Extrusion` captures the sketch's placement when it is created. Position
+the sketch **first**, then extrude; moving the sketch afterwards does not move a
+solid that has already been made.
+
+## Constraint indices are 0-based
+
+`add_sketch_constraint`'s `first` and `second` are 0-based, as FreeCAD numbers
+geometry internally. Every other index in this surface is 1-based. That
+inconsistency is FreeCAD's, not this tool's, so the tool description says so
+rather than leaving a caller to discover it by getting a fault.

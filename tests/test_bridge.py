@@ -283,6 +283,73 @@ def test_fault_codes_map_to_typed_errors() -> None:
             bridge.ping()
 
 
+def test_fault_map_matches_the_bridge_source() -> None:
+    """The client's fault table and the bridge's FAULT_* constants are one set.
+
+    Both halves are correct on their own and still drift apart: a new
+    FAULT_NOTHING_SPECIFIC added on the bridge side reaches the client as an
+    unmapped code, which _raise_fault turns into a bare BridgeError. The
+    specific condition is lost and the caller gets no hint - a silent
+    regression that every other test here would pass straight through, because
+    none of them add a code.
+
+    Reads the constants out of the source rather than importing the bridge,
+    which is launched by path and must never be imported by the package.
+    """
+    source = BRIDGE_SCRIPT.read_text(encoding="utf-8")
+    tree = ast.parse(source, filename=str(BRIDGE_SCRIPT), feature_version=(3, 11))
+    declared: dict[str, int] = {}
+    for node in tree.body:
+        if not isinstance(node, ast.Assign):
+            continue
+        for target in node.targets:
+            if (
+                isinstance(target, ast.Name)
+                and target.id.startswith("FAULT_")
+                and isinstance(node.value, ast.Constant)
+                and isinstance(node.value.value, int)
+            ):
+                declared[target.id] = node.value.value
+
+    assert declared, "no FAULT_* constants found in the bridge source"
+    assert len(set(declared.values())) == len(declared), (
+        f"two FAULT_* constants share a code: {declared}"
+    )
+
+    client_codes = set(bridge_module._FAULT_MAP)
+    bridge_codes = set(declared.values())
+
+    only_bridge = sorted(bridge_codes - client_codes)
+    assert not only_bridge, (
+        f"the bridge raises {only_bridge} but the client does not map them, so "
+        f"they arrive as a bare BridgeError with no hint. Add them to "
+        f"_FAULT_MAP in bridge.py."
+    )
+    only_client = sorted(client_codes - bridge_codes - {1})
+    assert not only_client, (
+        f"_FAULT_MAP in bridge.py handles {only_client}, which the bridge "
+        f"never raises. Dead entries hide a renamed or deleted constant."
+    )
+
+    # Code 1 is xmlrpc's own code for any uncaught exception, so the bridge
+    # does not declare it as a FAULT_* constant. It is expected on one side only,
+    # and it must stay mapped or a genuine bug arrives as an unknown code.
+    assert client_codes & {1} == {1}
+    assert bridge_module._FAULT_MAP[1] is BridgeInternalError
+
+
+def test_every_fault_kind_carries_a_recovery_hint() -> None:
+    """A typed error with no hint fails CAP-6 just as surely as a raised one.
+
+    Checked across the whole table rather than a hand-picked few, so a newly
+    added kind cannot arrive without one.
+    """
+    missing = [
+        cls.__name__ for cls in bridge_module._FAULT_MAP.values() if not cls("x").hint
+    ]
+    assert not missing, f"these error kinds carry no recovery hint: {missing}"
+
+
 def test_typed_errors_carry_recovery_hints() -> None:
     for cls in (DocumentNotFound, ObjectNotFound, PropertyNotFound, NoShape):
         assert cls("x").hint, f"{cls.__name__} has no recovery hint"

@@ -78,6 +78,15 @@ def test_every_tool_is_registered(registry: Any) -> None:
         "chamfer",
         "mirror",
         "linear_array",
+        # Sketches: 2D profile to solid. See spec-freecad-ai-sketches.
+        "add_sketch",
+        "add_sketch_line",
+        "add_sketch_arc",
+        "add_sketch_circle",
+        "remove_sketch_geometry",
+        "add_sketch_constraint",
+        "sketch_status",
+        "extrude_sketch",
     }
 
 

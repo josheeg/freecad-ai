@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import subprocess
+import time
 import uuid
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
@@ -33,6 +34,27 @@ from freecad_ai.bridge import (
 
 PORT = 9876
 HOST = "127.0.0.1"
+
+
+def _freecad_pids() -> set[int]:
+    """PIDs of every FreeCAD process on this machine.
+
+    Counts all of them, not just the ones this suite launched, so a leak is
+    detectable without the test having to own the process it is watching for.
+    Uses tasklist rather than psutil, which is not a dependency.
+    """
+    result = subprocess.run(
+        ["tasklist", "/FI", "IMAGENAME eq freecadcmd.exe", "/FO", "CSV", "/NH"],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    pids: set[int] = set()
+    for line in result.stdout.splitlines():
+        parts = [p.strip('" ') for p in line.split('","')]
+        if len(parts) > 1 and parts[1].isdigit():
+            pids.add(int(parts[1]))
+    return pids
 
 
 @pytest.fixture(scope="module")
@@ -320,14 +342,35 @@ def test_refuses_to_adopt_a_foreign_freecad() -> None:
     If another FreeCAD already holds the port, the one launched here cannot
     bind and a readiness ping answers from the incumbent — so the client would
     adopt it along with its open documents. Verified by pid.
+
+    Also asserts the rejected FreeCAD is not left running. It could not bind,
+    so it is idle and holding nothing, but the caller receives an exception and
+    never gets a handle on it. Leaking it here orphans a process per run, and
+    because it stays bound to the port the next run fails the same way — the
+    leak compounds instead of clearing.
     """
     incumbent, other = start_headless(HOST, PORT + 3, timeout=60.0)
+    before = _freecad_pids()
     try:
         other.new_document("SOMEONE_ELSES_WORK")
         with pytest.raises(PortInUse, match="not the pid"):
             start_headless(HOST, PORT + 3, timeout=20.0)
     finally:
         stop(incumbent)
+
+    # The rejected process is gone. Allow a moment for the port to be released
+    # so a slow teardown is not reported as a leak.
+    deadline = time.monotonic() + 10.0
+    leaked: set[int] = set()
+    while time.monotonic() < deadline:
+        leaked = _freecad_pids() - before
+        if not leaked:
+            break
+        time.sleep(0.25)
+    assert not leaked, (
+        f"FreeCAD processes left running after a rejected start: {sorted(leaked)}. "
+        f"start_headless must stop the process it launched before raising."
+    )
 
 
 @pytest.mark.integration

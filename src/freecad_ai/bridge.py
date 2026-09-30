@@ -145,6 +145,35 @@ class EmptyResult(BridgeError):
     )
 
 
+class ProfileNotClosed(BridgeError):
+    """A sketch outline does not close, so it cannot become a solid.
+
+    Its own error class because the alternative is silent: FreeCAD extrudes an
+    open profile into a *wrong solid* rather than refusing. The message names
+    the vertices that fail to meet.
+    """
+
+    hint = (
+        "A profile must be one connected outline whose ends meet. Call "
+        "`sketch_status` to see whether it is closed and which endpoints do "
+        "not meet; a mis-spanned arc or a missing line is the usual cause."
+    )
+
+
+class NotASketch(BridgeError):
+    hint = (
+        "That object is not a sketch. Create one with `add_sketch`, or pass "
+        "the name of a `Sketcher::SketchObject`."
+    )
+
+
+class NoSuchConstraint(BridgeError):
+    hint = (
+        "That constraint does not exist. FreeCAD numbers constraint elements "
+        "from 0, unlike the 1-based geometry and edge numbers elsewhere."
+    )
+
+
 class BridgeInternalError(BridgeError):
     """The bridge raised an unclassified exception."""
 
@@ -178,7 +207,23 @@ _FAULT_MAP: dict[int, type[BridgeError]] = {
     110: BadGeometry,
     111: NoSuchFeature,
     112: EmptyResult,
+    113: ProfileNotClosed,
+    114: NotASketch,
+    115: NoSuchConstraint,
 }
+
+
+def _dim(value: Any) -> float:
+    """Coerce a caller-supplied dimension, refusing bools.
+
+    A bool is an int in Python, so ``float(True)`` is ``1.0``. Without this a
+    caller who passed a flag where a coordinate belongs would silently get a
+    1mm line rather than an error. The bridge checks again on its side; this
+    catches it before the round trip.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise BadGeometry(f"expected a number, got {value!r}")
+    return float(value)
 
 
 def _raise_fault(error: xmlrpc.client.Fault) -> None:
@@ -400,6 +445,128 @@ class Bridge:
 
     def list_primitive_types(self) -> list[dict[str, Any]]:
         return cast("list[dict[str, Any]]", self._call("list_primitive_types"))
+
+    # -- sketches ---------------------------------------------------------
+    # See spec-freecad-ai-sketches. Geometry crosses as plain numbers because a
+    # Part geometry object has no marshallable form; the bridge builds it.
+    #
+    # Coordinates go through _dim rather than a bare float(): a bool is an int
+    # in Python, so float(True) is 1.0 and a caller who passed a flag would
+    # silently get a 1mm line instead of an error.
+
+    def add_sketch(self, name: str, sketch_name: str) -> str:
+        return cast(str, self._call("add_sketch", name, sketch_name))
+
+    def add_sketch_line(
+        self,
+        name: str,
+        sketch_name: str,
+        x1: float,
+        y1: float,
+        x2: float,
+        y2: float,
+    ) -> dict[str, Any]:
+        return cast(
+            "dict[str, Any]",
+            self._call(
+                "add_sketch_line",
+                name,
+                sketch_name,
+                _dim(x1),
+                _dim(y1),
+                _dim(x2),
+                _dim(y2),
+            ),
+        )
+
+    def add_sketch_arc(
+        self,
+        name: str,
+        sketch_name: str,
+        cx: float,
+        cy: float,
+        radius: float,
+        start_angle: float,
+        end_angle: float,
+    ) -> dict[str, Any]:
+        return cast(
+            "dict[str, Any]",
+            self._call(
+                "add_sketch_arc",
+                name,
+                sketch_name,
+                _dim(cx),
+                _dim(cy),
+                _dim(radius),
+                _dim(start_angle),
+                _dim(end_angle),
+            ),
+        )
+
+    def add_sketch_circle(
+        self,
+        name: str,
+        sketch_name: str,
+        cx: float,
+        cy: float,
+        radius: float,
+    ) -> dict[str, Any]:
+        return cast(
+            "dict[str, Any]",
+            self._call(
+                "add_sketch_circle",
+                name,
+                sketch_name,
+                _dim(cx),
+                _dim(cy),
+                _dim(radius),
+            ),
+        )
+
+    def remove_sketch_geometry(
+        self, name: str, sketch_name: str, index: int
+    ) -> dict[str, Any]:
+        return cast(
+            "dict[str, Any]",
+            self._call("remove_sketch_geometry", name, sketch_name, int(index)),
+        )
+
+    def add_sketch_constraint(
+        self,
+        name: str,
+        sketch_name: str,
+        kind: str,
+        first: int,
+        first_pos: int,
+        second: int,
+        second_pos: int,
+        value: float,
+    ) -> dict[str, Any]:
+        return cast(
+            "dict[str, Any]",
+            self._call(
+                "add_sketch_constraint",
+                name,
+                sketch_name,
+                str(kind),
+                int(first),
+                int(first_pos),
+                int(second),
+                int(second_pos),
+                _dim(value),
+            ),
+        )
+
+    def sketch_status(self, name: str, sketch_name: str) -> dict[str, Any]:
+        return cast("dict[str, Any]", self._call("sketch_status", name, sketch_name))
+
+    def extrude_sketch(
+        self, name: str, sketch_name: str, result_name: str, depth: float
+    ) -> str:
+        return cast(
+            str,
+            self._call("extrude_sketch", name, sketch_name, result_name, _dim(depth)),
+        )
 
     def get_properties(self, name: str, object_name: str) -> dict[str, Any]:
         return cast("dict[str, Any]", self._call("get_properties", name, object_name))

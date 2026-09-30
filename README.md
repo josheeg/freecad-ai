@@ -146,7 +146,7 @@ src/freecad_ai/_freecad_bridge.py  runs under FreeCAD's bundled Python 3.11;
                                   the only file permitted to import FreeCAD,
                                   launched by path and never imported
 src/freecad_ai/bridge.py           XML-RPC client and process launcher (3.14)
-src/freecad_ai/server.py           MCP server, 24 tools over stdio
+src/freecad_ai/server.py           MCP server, 32 tools over stdio
 scripts/freecad_procs.py           reports or stops leaked FreeCAD processes
 ```
 
