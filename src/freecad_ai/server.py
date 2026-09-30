@@ -365,7 +365,9 @@ def mirror(
 @_tool(
     "linear_array",
     "Repeat an object along a straight line, fusing the copies into a new "
-    "object. offset is the step between copies; count includes the original.",
+    "object. offset is the step between copies; count includes the original. "
+    "The copies are static, not parametric: editing the source afterwards does "
+    "NOT update the array, so re-run this tool to change the pattern.",
 )
 def linear_array(
     document: str,

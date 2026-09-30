@@ -658,7 +658,7 @@ def _center_of_mass(shape: Any) -> list[float]:
         solids = shape.Solids
         if solids:
             return _vec(solids[0].CenterOfMass)
-    except AttributeError, IndexError:
+    except (AttributeError, IndexError):
         pass
     return []
 

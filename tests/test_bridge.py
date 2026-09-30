@@ -6,12 +6,15 @@ These never start FreeCAD. End-to-end coverage lives in
 
 from __future__ import annotations
 
+import ast
 import re
 import subprocess
+import tempfile
 import time
 import xmlrpc.client
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -172,6 +175,27 @@ def test_explicit_arguments_beat_the_environment(monkeypatch: Any) -> None:
     assert Bridge(port=9999).port == 9999
 
 
+def test_bridge_script_parses_as_python_3_11() -> None:
+    """The FreeCAD-side script runs under 3.11, so it must parse as 3.11.
+
+    The project's own tooling targets 3.14, and 3.14 accepted syntax that 3.11
+    does not — `except A, B:` without parentheses is PEP 758. Ruff and mypy
+    were both happy; FreeCAD refused to import the script, and because its
+    output was discarded the only symptom was a bridge that never came up.
+
+    `ast.parse(feature_version=...)` applies the older grammar, which is
+    exactly the check that was missing.
+    """
+    source = BRIDGE_SCRIPT.read_text(encoding="utf-8")
+    try:
+        ast.parse(source, filename=str(BRIDGE_SCRIPT), feature_version=(3, 11))
+    except SyntaxError as error:
+        pytest.fail(
+            f"{BRIDGE_SCRIPT.name} is not valid Python 3.11, which is what "
+            f"FreeCAD's bundled interpreter runs: {error}"
+        )
+
+
 def test_freecad_output_streams_are_never_piped(monkeypatch: Any) -> None:
     """FreeCAD's output must not be captured, or the bridge deadlocks.
 
@@ -193,8 +217,25 @@ def test_freecad_output_streams_are_never_piped(monkeypatch: Any) -> None:
     with pytest.raises(RuntimeError, match="stop after Popen"):
         bridge_module.start_headless()
 
-    assert captured["stdout"] is subprocess.DEVNULL
-    assert captured["stderr"] is subprocess.DEVNULL
+    # The invariant is "never a pipe", not "always DEVNULL": output now goes
+    # to a file so a bridge that cannot start can explain itself.
+    assert captured["stdout"] is not subprocess.PIPE
+    assert "stderr" not in captured or captured["stderr"] is not subprocess.PIPE
+
+
+def test_freecad_output_is_retained_for_diagnosis() -> None:
+    """Startup failures must be explainable, not just a timeout.
+
+    Output once went to DEVNULL, so a bridge script that would not import
+    produced no clue at all — only "did not become ready within 30s". It now
+    goes to a file, which keeps the deadlock fix and restores the diagnosis.
+    """
+    log = Path(tempfile.gettempdir()) / "freecad-ai-bridge-19999.log"
+    if log.exists():
+        log.unlink()
+    log.write_text("line one\nline two\n", encoding="utf-8")
+    fake = SimpleNamespace(freecad_ai_log=log)
+    assert "line two" in bridge_module.bridge_log_tail(fake)
 
 
 def test_freecad_bin_path_is_configurable(monkeypatch: Any) -> None:

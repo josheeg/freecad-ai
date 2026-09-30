@@ -102,16 +102,42 @@ someone else's session would hand the model their open documents. Note
 
 ## Development
 
+If [`just`](https://github.com/casey/just) is installed, these wrap the same
+commands CI runs:
+
 ```bash
-uv run pytest                      # everything
-uv run pytest -m "not integration" # skip tests that start FreeCAD
+just check             # the gate a commit must pass
+just test              # everything, then a leaked-process check
+just test-integration  # only the tests that drive a real FreeCAD
+just format            # reformat, including the bridge at its own target
+```
+
+Without it, the raw commands are:
+
+```bash
+uv run pytest                      # everything, ~25s (starts a real FreeCAD)
+uv run pytest -m "not integration" # only the tests that need no FreeCAD
 uv run ruff check .
 uv run ruff format .               # CI enforces `ruff format --check`
 uv run mypy
 ```
 
-`mypy` runs in strict mode. Integration tests launch a real headless FreeCAD
-1.1 process, so a working install is required for the full suite.
+The FreeCAD-side bridge is linted and formatted separately, because it runs
+under FreeCAD's bundled Python 3.11 while everything else targets 3.14:
+
+```bash
+uv run ruff check   --target-version py311 src/freecad_ai/_freecad_bridge.py
+uv run ruff format --target-version py311 src/freecad_ai/_freecad_bridge.py
+```
+
+`mypy` runs in strict mode over `src/` and `scripts/`. Integration tests launch
+a real headless FreeCAD 1.1 process, so a working install is required for the
+full suite.
+
+If a test run is interrupted, a `freecadcmd` can be left holding a port, which
+makes the next run fail for the wrong reason. `just post-test` reports that and
+fails; `just kill-freecad` clears it. It matches on the bridge script path, so
+a FreeCAD you are using through the GUI is never touched.
 
 ## Architecture
 
@@ -120,7 +146,8 @@ src/freecad_ai/_freecad_bridge.py  runs under FreeCAD's bundled Python 3.11;
                                   the only file permitted to import FreeCAD,
                                   launched by path and never imported
 src/freecad_ai/bridge.py           XML-RPC client and process launcher (3.14)
-src/freecad_ai/server.py           MCP server, 14 tools over stdio
+src/freecad_ai/server.py           MCP server, 24 tools over stdio
+scripts/freecad_procs.py           reports or stops leaked FreeCAD processes
 ```
 
 The FreeCAD-side script lives inside the package so it ships in the wheel — an
@@ -148,6 +175,25 @@ describe_geometry("bracket", "Drilled")  # {"edges": [{"name": "Edge1", ...}], .
 fillet("bracket", "Drilled", "Rounded", edges=[1, 3], radius=2.0)
 shape_summary("bracket", "Rounded")  # volume 3142.87 (3149.73 − 6.87 of rounding)
 ```
+
+`linear_array` is the one tool whose result is not parametric: it fuses static
+copies, so editing the source afterwards does not update the array. Re-run it
+to change the pattern.
+
+## Specification
+
+The design decisions behind this server are written down rather than left in
+commit messages, under `_bmad-output/initiative-freecad-mcp-server/`:
+
+- **Spec** — `spec-freecad-ai-server/spec-freecad-ai-server.md`, with
+  `tool-surface.md`, `failure-modes.md` and `conventions.md`. What the system
+  does, and what it deliberately does not.
+- **Spine** — `architecture-freecad-ai-server/architecture-freecad-ai-server.md`.
+  Twenty-one numbered decisions, AD-1…AD-21, each naming the failure it
+  prevents. These are binding on any change here.
+
+`AGENTS.md` points at both, and a test asserts the counts in all three files
+still agree, so they cannot quietly drift apart.
 
 ## Security
 

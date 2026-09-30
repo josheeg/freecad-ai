@@ -499,8 +499,10 @@ def test_measure_reports_mass_properties(bridge: Bridge, block20: str) -> None:
 def test_distance_between_two_objects(bridge: Bridge, two_boxes: str) -> None:
     result = bridge.distance(two_boxes, "A", second="B")
     assert result["distance"] == pytest.approx(15.0)
-    assert result["point_on_first"] == pytest.approx([10.0, 0.0, 5.0], abs=1e-6)
-    assert result["point_on_second"] == pytest.approx([25.0, 0.0, 5.0], abs=1e-6)
+    # The closest points lie on the facing faces. Y and Z are not asserted:
+    # many points are equidistant and FreeCAD picks one of them.
+    assert result["point_on_first"][0] == pytest.approx(10.0)
+    assert result["point_on_second"][0] == pytest.approx(25.0)
 
 
 @pytest.mark.integration

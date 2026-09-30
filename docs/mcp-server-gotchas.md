@@ -64,7 +64,7 @@ Enforced by `test_bridge_serialises_calls`,
 
 ## Process lifecycle
 
-### FreeCAD's output streams must stay DEVNULL
+### FreeCAD's output must not go on a pipe
 
 FreeCAD writes `Recompute......` progress output continuously. Capturing it
 with `subprocess.PIPE` and never reading fills the ~64KB pipe buffer; FreeCAD
@@ -72,7 +72,11 @@ then blocks in `write()` and stops answering the bridge. The process stays
 alive, so this presents as a hang rather than a crash, and only a heavy
 enough workload reaches the limit.
 
-Enforced by `test_freecad_output_streams_are_never_piped`.
+It goes to a log file, not `DEVNULL`. `DEVNULL` avoided the deadlock but made
+startup failures undiagnosable — a bridge that could not start reported only
+"did not become ready within 30s". The log path is attached to the process as
+`freecad_ai_log`, read with `bridge_log_tail`, and included in the error when
+FreeCAD exits non-zero.
 
 ### A busy port must be an error, not a silent adoption
 
@@ -166,6 +170,22 @@ translated copies, which needs no workbench. The copies become static
 
 ## Tooling
 
-`mypy` excludes `_freecad_bridge.py`: it runs under FreeCAD's bundled 3.11,
-so strict 3.14 checking does not describe it. `ruff` still lints it. The
-reason is recorded in `pyproject.toml` alongside the setting.
+`_freecad_bridge.py` runs under FreeCAD's bundled 3.11, so it is excluded
+from the default ruff and mypy runs and checked separately. The mypy reason
+is recorded in `pyproject.toml`.
+
+**The ruff exclusion is not optional.** Ruff infers `target-version` from
+`requires-python` (3.14) and takes one value for the whole run. Under 3.14
+`except A, B:` is valid — PEP 758 — and `ruff format` *prefers* that
+unparenthesised form, rewriting correct code into a 3.11 syntax error:
+
+```
+Exception while processing file: _freecad_bridge.py
+[('multiple exception types must be parenthesized', ..., 661, 12,
+  '    except AttributeError, IndexError:\n', 661, 38)]
+```
+
+The failure looks like a FreeCAD problem, not a formatting one, and it is
+silent unless the bridge's output is being kept — see the log file above.
+`test_bridge_script_parses_as_python_3_11` catches it with
+`ast.parse(..., feature_version=(3, 11))`.

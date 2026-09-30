@@ -10,6 +10,7 @@ from __future__ import annotations
 import http.client
 import os
 import subprocess
+import tempfile
 import threading
 import time
 import xmlrpc.client
@@ -522,11 +523,14 @@ def start_headless(
     if os.name == "nt":
         creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
-    # DEVNULL, not PIPE. FreeCAD writes progress output ("Recompute......")
-    # continuously while modelling and exporting; an unread pipe fills its
-    # ~64KB buffer, after which FreeCAD blocks in write() and stops answering
-    # the bridge entirely. Nothing reads these streams, so capturing them only
-    # creates a deadlock. Readiness is confirmed by ping, not by output.
+    # Not PIPE. FreeCAD writes progress output ("Recompute......")
+    # continuously; an unread pipe fills its ~64KB buffer, after which FreeCAD
+    # blocks in write() and stops answering the bridge entirely. A file gives
+    # the same non-blocking behaviour as DEVNULL while still keeping the
+    # output — without which a bridge that fails to start says only that it
+    # never became ready.
+    log_path = Path(tempfile.gettempdir()) / f"freecad-ai-bridge-{resolved_port}.log"
+    log_file = log_path.open("w", encoding="utf-8", errors="replace")
     process = subprocess.Popen(
         [
             str(freecadcmd_path()),
@@ -534,39 +538,70 @@ def start_headless(
             resolved_host,
             str(resolved_port),
         ],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        stdout=log_file,
+        stderr=subprocess.STDOUT,
         creationflags=creationflags,
     )
+    process.freecad_ai_log = log_path  # type: ignore[attr-defined]
+    process.freecad_ai_log_file = log_file  # type: ignore[attr-defined]
     try:
         bridge = wait_until_ready(resolved_host, resolved_port, timeout)
-        # Confirm the bridge we reached is the process we launched. If the port
-        # was already held, our FreeCAD failed to bind and wait_until_ready
-        # answered from that other process — adopting it would hand the model
-        # someone else's open documents.
-        served_by = bridge.instance_pid()
-        if served_by != process.pid:
-            raise PortInUse(
-                f"port {resolved_port} is served by FreeCAD pid {served_by}, "
-                f"not the pid {process.pid} started here"
-            )
-    except BridgeError:
+    except BridgeError as error:
+        detail = bridge_log_tail(process)
         process.terminate()
         try:
             process.wait(timeout=5)
         except subprocess.TimeoutExpired:
             process.kill()
+        if process.returncode not in (None, 0) and detail:
+            raise BridgeError(
+                f"{error}\nFreeCAD exited with code {process.returncode}. "
+                f"Its output:\n{detail}"
+            ) from error
         raise
+    # Confirm the bridge we reached is the process we launched. If the port
+    # was already held, our FreeCAD failed to bind and wait_until_ready
+    # answered from that other process — adopting it would hand the model
+    # someone else's open documents.
+    served_by = bridge.instance_pid()
+    if served_by != process.pid:
+        # Our FreeCAD could not bind, so it is still running, idle, and holding
+        # nothing. Stop it before raising: the caller gets an exception here and
+        # has no handle on this process, so an un-terminated one is orphaned for
+        # good. It also stays bound to the port, which makes the next attempt
+        # fail the same way — a leak that compounds.
+        stop(process)
+        raise PortInUse(
+            f"port {resolved_port} is served by FreeCAD pid {served_by}, "
+            f"not the pid {process.pid} started here"
+        )
     return process, bridge
 
 
 def stop(process: subprocess.Popen[bytes], timeout: float = 5.0) -> None:
     """Terminate a bridge process, escalating to kill if it ignores that."""
-    if process.poll() is not None:
-        return
-    process.terminate()
     try:
-        process.wait(timeout=timeout)
-    except subprocess.TimeoutExpired:
-        process.kill()
-        process.wait(timeout=timeout)
+        if process.poll() is not None:
+            return
+        process.terminate()
+        try:
+            process.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=timeout)
+    finally:
+        log_file = getattr(process, "freecad_ai_log_file", None)
+        if log_file is not None and not log_file.closed:
+            log_file.close()
+
+
+def bridge_log_tail(process: subprocess.Popen[bytes], lines: int = 12) -> str:
+    """Last few lines FreeCAD wrote, for diagnosing a bridge that never came up."""
+    log_path = getattr(process, "freecad_ai_log", None)
+    if log_path is None or not Path(log_path).is_file():
+        return ""
+    try:
+        content = Path(log_path).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+    return "\n".join(content.splitlines()[-lines:]).strip()

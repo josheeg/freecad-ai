@@ -31,8 +31,16 @@ dev = [
 [tool.ruff]
 line-length = 88
 src = ["src", "tests"]
+# _freecad_bridge.py runs under FreeCAD's bundled Python 3.11, but ruff infers
+# the target version from requires-python (3.14) and takes one value for the
+# whole run. Under 3.14 `except A, B:` is valid (PEP 758), so the formatter
+# rewrites the parenthesised form to the unparenthesised one — which 3.11 then
+# refuses to parse and the bridge stops starting. Excluded here, and formatted
+# separately with `ruff format --target-version py311`.
 extend-exclude = [
+    "src/freecad_ai/_freecad_bridge.py",
     "_bmad",
+    "_bmad-output",
     ".agents",
     ".claude",
     ".continue",
@@ -49,7 +57,7 @@ select = ["E", "W", "F", "I", "B", "UP", "SIM", "RUF"]
 
 [tool.mypy]
 python_version = "3.14"
-files = ["src"]
+files = ["src", "scripts"]
 strict = true
 # _freecad_bridge.py runs under FreeCAD's bundled Python 3.11, never under this
 # project's 3.14, so strict 3.14 checking does not describe it. It is launched
