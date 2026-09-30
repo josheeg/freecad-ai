@@ -22,6 +22,7 @@ from freecad_ai.bridge import (
     Bridge,
     BridgeError,
     DocumentExists,
+    EmptyResult,
     ExportFailed,
     NoSuchDimension,
     ObjectNotFound,
@@ -461,6 +462,118 @@ def test_fillet_then_export(bridge: Bridge, block20: str, tmp_path: Path) -> Non
     target = tmp_path / "rounded.step"
     bridge.export_object(block20, "Rounded", str(target))
     assert target.stat().st_size > 0
+
+
+@pytest.fixture
+def two_boxes(bridge: Bridge) -> str:
+    """Two 10mm boxes 25mm apart on X, so the gap between them is 15mm."""
+    document = bridge.new_document(f"gap{uuid.uuid4().hex[:8]}")["name"]
+    bridge.add_primitive(
+        document, "Part::Box", "A", {"Length": 10.0, "Width": 10.0, "Height": 10.0}
+    )
+    bridge.add_primitive(
+        document, "Part::Box", "B", {"Length": 10.0, "Width": 10.0, "Height": 10.0}
+    )
+    bridge.set_placement(document, "B", 25.0, 0.0, 0.0)
+    return document
+
+
+@pytest.mark.integration
+def test_measure_reports_mass_properties(bridge: Bridge, block20: str) -> None:
+    """Values measured against FreeCAD 1.1.3."""
+    facts = bridge.measure(block20, "B")
+    assert facts["shape_type"] == "Solid"
+    assert facts["is_valid"] is True
+    assert facts["is_closed"] is True
+    assert facts["volume"] == pytest.approx(8000.0)
+    assert facts["area"] == pytest.approx(2400.0)
+    assert facts["center_of_mass"] == pytest.approx([10.0, 10.0, 10.0])
+    assert facts["bounding_box"] == pytest.approx([0, 0, 0, 20, 20, 20])
+    assert facts["solid_count"] == 1
+    assert facts["face_count"] == 6
+    assert facts["edge_count"] == 12
+    assert facts["vertex_count"] == 8
+
+
+@pytest.mark.integration
+def test_distance_between_two_objects(bridge: Bridge, two_boxes: str) -> None:
+    result = bridge.distance(two_boxes, "A", second="B")
+    assert result["distance"] == pytest.approx(15.0)
+    assert result["point_on_first"] == pytest.approx([10.0, 0.0, 5.0], abs=1e-6)
+    assert result["point_on_second"] == pytest.approx([25.0, 0.0, 5.0], abs=1e-6)
+
+
+@pytest.mark.integration
+def test_distance_point_to_object(bridge: Bridge, two_boxes: str) -> None:
+    result = bridge.distance(two_boxes, "A", point=[0.0, 0.0, 50.0])
+    assert result["distance"] == pytest.approx(40.0)
+    assert "point_on_object" in result
+
+
+@pytest.mark.integration
+def test_distance_of_overlapping_objects_is_zero(
+    bridge: Bridge, two_boxes: str
+) -> None:
+    bridge.set_placement(two_boxes, "B", 5.0, 0.0, 0.0)
+    assert bridge.distance(two_boxes, "A", second="B")["distance"] == pytest.approx(
+        0.0, abs=1e-6
+    )
+
+
+@pytest.mark.integration
+def test_distance_needs_exactly_one_target(bridge: Bridge, two_boxes: str) -> None:
+    with pytest.raises(BadGeometry, match="exactly one"):
+        bridge.distance(two_boxes, "A")
+    with pytest.raises(BadGeometry, match="exactly one"):
+        bridge.distance(two_boxes, "A", second="B", point=[0.0, 0.0, 0.0])
+
+
+@pytest.mark.integration
+def test_is_inside(bridge: Bridge, two_boxes: str) -> None:
+    assert bridge.is_inside(two_boxes, "A", [5.0, 5.0, 5.0])["inside"] is True
+    assert bridge.is_inside(two_boxes, "A", [50.0, 50.0, 50.0])["inside"] is False
+
+
+@pytest.mark.integration
+def test_cross_section_area(bridge: Bridge, block20: str) -> None:
+    section = bridge.cross_section(block20, "B", [0.0, 0.0, 1.0], 10.0)
+    assert section["wire_count"] == 1
+    assert section["area"] == pytest.approx(400.0)
+
+
+@pytest.mark.integration
+def test_cross_section_that_misses_is_reported(bridge: Bridge, block20: str) -> None:
+    with pytest.raises(EmptyResult, match="does not cut"):
+        bridge.cross_section(block20, "B", [0.0, 0.0, 1.0], 500.0)
+
+
+@pytest.mark.integration
+def test_cross_section_rejects_a_zero_normal(bridge: Bridge, block20: str) -> None:
+    with pytest.raises(BadGeometry, match="zero vector"):
+        bridge.cross_section(block20, "B", [0.0, 0.0, 0.0], 10.0)
+
+
+@pytest.mark.integration
+def test_empty_intersection_is_not_silently_accepted(bridge: Bridge) -> None:
+    """A `common` of shapes that never touch must fail, not return 0 volume.
+
+    FreeCAD hands back a valid Compound with no solids in it, so an isNull
+    check alone lets an empty result through as if it were a real one.
+    """
+    document = bridge.new_document(f"far{uuid.uuid4().hex[:8]}")["name"]
+    bridge.add_primitive(
+        document, "Part::Box", "A", {"Length": 10.0, "Width": 10.0, "Height": 10.0}
+    )
+    bridge.add_primitive(
+        document, "Part::Box", "B", {"Length": 10.0, "Width": 10.0, "Height": 10.0}
+    )
+    bridge.set_placement(document, "B", 100.0, 0.0, 0.0)
+    with pytest.raises(EmptyResult, match="do not intersect"):
+        bridge.boolean_op(document, "A", "B", "common", "Nothing")
+
+    # Fusing them is legitimate and must still work.
+    bridge.boolean_op(document, "A", "B", "fuse", "Both")
+    assert bridge.measure(document, "Both")["solid_count"] == 2
 
 
 @pytest.mark.integration

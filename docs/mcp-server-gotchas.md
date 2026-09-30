@@ -140,6 +140,30 @@ Each operation is its own parametric feature type: `Part::Cut`, `Part::Fuse`,
 running FreeCAD rather than asserting a hardcoded list, so do not hardcode
 one either.
 
+### Fillet and chamfer take Base as the object, not a sub-element tuple
+
+`Part::Fillet.Base` is a plain `App::DocumentObject`. Assigning the usual
+`(obj, ["Edge1"])` sub-element tuple raises `Type must be App::DocumentObject
+or None, not tuple`. The sub-element names live in `EdgeLinks`, which FreeCAD
+fills in itself, and the radii go in `Edges` as
+`(index, start_radius, end_radius)` tuples with a **1-based** index.
+
+`Part::Chamfer` takes the same shape, with the chamfer size in both positions.
+
+### Edge indices are only useful if something can list them
+
+`Edges` refers to edges by position, which means nothing to a caller. That is
+why `describe_geometry` exists: it reports `Edge1`, `Edge2`, … exactly as
+FreeCAD names them, with type, length and endpoints.
+
+### Arrays are not available headlessly
+
+`Part::Array`, `Part::OrthoArray` and `Draft::Array` all raise
+`is not a document object type` in `freecadcmd`, and `import Draft` does not
+register them. `linear_array` is therefore built from a `Part::MultiFuse` of
+translated copies, which needs no workbench. The copies become static
+`Part::Feature` objects rather than a parametric array.
+
 ## Tooling
 
 `mypy` excludes `_freecad_bridge.py`: it runs under FreeCAD's bundled 3.11,

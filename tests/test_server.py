@@ -70,6 +70,10 @@ def test_every_tool_is_registered(registry: Any) -> None:
         "set_placement",
         "list_primitive_types",
         "describe_geometry",
+        "measure",
+        "distance",
+        "is_inside",
+        "cross_section",
         "fillet",
         "chamfer",
         "mirror",
@@ -138,6 +142,8 @@ def test_no_tool_returns_a_bare_list(registry: Any, monkeypatch: Any) -> None:
         "get_properties",
         "shape_summary",
         "describe_geometry",
+        "measure",
+        "is_inside",
     ):
         setattr(fake, name, MagicMock(return_value=["a", "b", "c"]))
     monkeypatch.setattr(server_module, "get_bridge", lambda: fake)

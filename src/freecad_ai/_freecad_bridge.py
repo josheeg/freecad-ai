@@ -47,6 +47,7 @@ FAULT_SAVE_FAILED = 108
 FAULT_BAD_OPERATION = 109
 FAULT_BAD_GEOMETRY = 110
 FAULT_NO_SUCH_FEATURE = 111
+FAULT_EMPTY_RESULT = 112
 
 # FreeCAD 1.1 has no generic Part::Boolean; each operation is its own
 # parametric feature type with Base and Tool links. Verified against 1.1.3.
@@ -334,13 +335,20 @@ def boolean_op(
     result.Base = base
     result.Tool = tool
     doc.recompute()
-    # A boolean that does not intersect produces an empty or degenerate shape;
-    # say so rather than returning a result with no volume.
+    # A boolean that does not intersect does not produce a null shape. Cutting
+    # two boxes that never touch yields a valid Compound holding the first,
+    # and intersecting them yields a valid Compound holding nothing at all.
+    # Reporting that as success hands back a result with no material in it.
     if result.Shape.isNull():
         _fail(
             FAULT_BAD_OPERATION,
-            f"{operation} of {base_name} and {tool_name} produced an empty shape; "
-            "the two may not overlap",
+            f"{operation} of {base_name} and {tool_name} produced an empty shape",
+        )
+    if operation == "common" and not result.Shape.Solids:
+        _fail(
+            FAULT_EMPTY_RESULT,
+            f"{base_name} and {tool_name} do not intersect, so their common "
+            f"part is empty; move them so they overlap",
         )
     return result.Name
 
@@ -628,6 +636,151 @@ def linear_array(
     if feature.Shape.isNull():
         _fail(FAULT_BAD_GEOMETRY, f"the copies of {object_name} do not form a solid")
     return feature.Name
+
+
+def _vec(value: Any) -> list[float]:
+    return [round(value.x, 6), round(value.y, 6), round(value.z, 6)]
+
+
+def measure(document: str, object_name: str) -> dict[str, Any]:
+    """Report a shape's mass properties and topology.
+
+    The extra fields matter when checking work: `is_valid` catches a shape the
+    kernel could not build, and `solid_count` catches a result that is
+    technically fine but is not the single body that was asked for.
+    """
+    shape = _shape_of(document, object_name)
+    box = shape.BoundBox
+    return {
+        "object": object_name,
+        "shape_type": shape.ShapeType,
+        "is_valid": bool(shape.isValid()),
+        "is_closed": bool(shape.isClosed()),
+        "volume": shape.Volume,
+        "area": shape.Area,
+        "center_of_mass": _vec(shape.CenterOfMass),
+        "bounding_box": [
+            box.XMin,
+            box.YMin,
+            box.ZMin,
+            box.XMax,
+            box.YMax,
+            box.ZMax,
+        ],
+        "solid_count": len(shape.Solids),
+        "shell_count": len(shape.Shells),
+        "face_count": len(shape.Faces),
+        "wire_count": len(shape.Wires),
+        "edge_count": len(shape.Edges),
+        "vertex_count": len(shape.Vertexes),
+    }
+
+
+def distance(
+    document: str,
+    first: str,
+    second: str | None = None,
+    point: list[float] | None = None,
+) -> dict[str, Any]:
+    """Closest distance between two objects, or between a point and an object.
+
+    Overlapping solids legitimately have distance 0; that is a position
+    question, not an error.
+    """
+    shape = _shape_of(document, first)
+    if (second is None) == (point is None):
+        _fail(
+            FAULT_BAD_GEOMETRY,
+            "give exactly one of second (another object) or point (3 values)",
+        )
+        return {}
+
+    if second is not None:
+        other = _shape_of(document, second)
+        gap, points, _ = shape.distToShape(other)
+        result: dict[str, Any] = {
+            "between": [first, second],
+            "distance": gap,
+        }
+        if points:
+            result["point_on_first"] = _vec(points[0][0])
+            result["point_on_second"] = _vec(points[0][1])
+        return result
+
+    if len(point or []) != 3:
+        _fail(FAULT_BAD_GEOMETRY, "point must have 3 values")
+        return {}
+    import Part
+
+    vertex = Part.Vertex(*(float(v) for v in point))
+    gap, points, _ = vertex.distToShape(shape)
+    result = {"between": [first, list(point)], "distance": gap}
+    if points:
+        result["point_on_object"] = _vec(points[0][1])
+    return result
+
+
+def is_inside(document: str, object_name: str, point: list[float]) -> dict[str, Any]:
+    """Test whether a point lies inside a solid."""
+    import FreeCAD
+
+    shape = _shape_of(document, object_name)
+    if len(point) != 3:
+        _fail(FAULT_BAD_GEOMETRY, "point must have 3 values")
+        return {}
+    location = FreeCAD.Vector(*(float(v) for v in point))
+    return {
+        "object": object_name,
+        "point": [float(v) for v in point],
+        "inside": bool(shape.isInside(location, 1e-7, True)),
+    }
+
+
+def cross_section(
+    document: str,
+    object_name: str,
+    normal: list[float],
+    offset: float,
+) -> dict[str, Any]:
+    """Slice a shape with a plane and report the resulting section.
+
+    The plane sits ``offset`` along ``normal`` from the origin, so for a
+    horizontal cut through a part on the Z axis use normal [0,0,1] and the
+    height you want.
+    """
+    import FreeCAD
+    import Part
+
+    shape = _shape_of(document, object_name)
+    if len(normal) != 3:
+        _fail(FAULT_BAD_GEOMETRY, "normal must have 3 values")
+        return {}
+    direction = FreeCAD.Vector(*(float(v) for v in normal))
+    if direction.Length == 0:
+        _fail(FAULT_BAD_GEOMETRY, "the section normal must not be a zero vector")
+        return {}
+
+    wires = shape.slice(direction, float(offset))
+    if not wires:
+        _fail(
+            FAULT_EMPTY_RESULT,
+            f"the plane does not cut {object_name}; it lies entirely to one "
+            f"side of offset {offset}",
+        )
+        return {}
+    total = 0.0
+    for wire in wires:
+        try:
+            total += Part.Face(wire).Area
+        except Exception:
+            continue
+    return {
+        "object": object_name,
+        "normal": [float(v) for v in normal],
+        "offset": float(offset),
+        "wire_count": len(wires),
+        "area": total,
+    }
 
 
 def get_properties(name: str, object_name: str) -> dict[str, Any]:

@@ -265,6 +265,49 @@ def set_placement(
 
 
 @_tool(
+    "measure",
+    "Mass properties and topology: volume, area, centre of mass, bounding "
+    "box, solid/face/edge counts, and whether the shape is valid. Use this to "
+    "check work rather than assuming a result is what was intended.",
+)
+def measure(document: str, object_name: str) -> dict[str, Any]:
+    return get_bridge().measure(document, object_name)
+
+
+@_tool(
+    "distance",
+    "Closest distance between two objects, or between an object and a point. "
+    "Give exactly one of `second` or `point`. Overlapping solids are 0 apart.",
+)
+def distance(
+    document: str,
+    first: str,
+    second: str | None = None,
+    point: list[float] | None = None,
+) -> dict[str, Any]:
+    return get_bridge().distance(document, first, second, point)
+
+
+@_tool(
+    "is_inside",
+    "Test whether a point lies inside an object's solid.",
+)
+def is_inside(document: str, object_name: str, point: list[float]) -> dict[str, Any]:
+    return get_bridge().is_inside(document, object_name, point)
+
+
+@_tool(
+    "cross_section",
+    "Slice an object with a plane and report the section's area and wire "
+    "count. The plane sits `offset` along `normal` from the origin.",
+)
+def cross_section(
+    document: str, object_name: str, normal: list[float], offset: float
+) -> dict[str, Any]:
+    return get_bridge().cross_section(document, object_name, normal, offset)
+
+
+@_tool(
     "describe_geometry",
     "List an object's edges and faces with their FreeCAD names (Edge1, "
     "Face2), types, lengths and positions. Call this before fillet or "

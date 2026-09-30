@@ -52,9 +52,14 @@ itself launches instantly. It runs headless — no GUI instance is started.
 | `list_primitive_types` | Part types this FreeCAD can create, with their properties |
 | `add_primitive` | Add a Part primitive (`Part::Box`, `Part::Cylinder`, …) |
 | `list_objects` | Objects in a document — returns `{"objects": [...]}` |
+| `describe_geometry` | Edges and faces with their FreeCAD names, types and positions |
 | `get_properties` / `set_property` | Read and write object properties |
 | `remove_object` | Remove an object |
 | `boolean_op` | cut, fuse or common two objects into a new feature |
+| `fillet` | Round edges, given 1-based indices from `describe_geometry` |
+| `chamfer` | Cut edges flat |
+| `mirror` | Reflect through a plane given by a point and a normal |
+| `linear_array` | Repeat along a line, fusing the copies |
 | `set_placement` | Move and rotate an object |
 | `shape_summary` | Volume, area and bounding box |
 | `export_object` | Write an object to `.step`, `.stl`, `.iges`, `.obj` or `.brep` |
@@ -134,6 +139,14 @@ set_placement("bracket", "Hole", 10, 9, -3)
 boolean_op("bracket", "Plate", "Hole", "cut", "Drilled")
 shape_summary("bracket", "Drilled")  # volume 3149.73 (3200 plate − 50.27 hole)
 export_object("bracket", "Drilled", "C:/parts/bracket.step")
+```
+
+Rounding an edge needs to know which edge is which, so ask first:
+
+```python
+describe_geometry("bracket", "Drilled")  # {"edges": [{"name": "Edge1", ...}], ...}
+fillet("bracket", "Drilled", "Rounded", edges=[1, 3], radius=2.0)
+shape_summary("bracket", "Rounded")  # volume 3142.87 (3149.73 − 6.87 of rounding)
 ```
 
 ## Security

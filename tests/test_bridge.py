@@ -27,6 +27,7 @@ from freecad_ai.bridge import (
     BridgeInternalError,
     DocumentExists,
     DocumentNotFound,
+    EmptyResult,
     ExportFailed,
     NoShape,
     NoSuchDimension,
@@ -233,6 +234,7 @@ def test_fault_codes_map_to_typed_errors() -> None:
         109: BadOperation,
         110: BadGeometry,
         111: NoSuchFeature,
+        112: EmptyResult,
     }
     for code, expected in cases.items():
         bridge = make_bridge(FakeProxy(raises=xmlrpc.client.Fault(code, "boom")))

@@ -137,6 +137,13 @@ class NoSuchFeature(BridgeError):
     hint = "This FreeCAD build does not provide that object type."
 
 
+class EmptyResult(BridgeError):
+    hint = (
+        "The two objects do not overlap, or the plane misses the shape. "
+        "Check positions with `measure` and `distance` first."
+    )
+
+
 class BridgeInternalError(BridgeError):
     """The bridge raised an unclassified exception."""
 
@@ -169,6 +176,7 @@ _FAULT_MAP: dict[int, type[BridgeError]] = {
     109: BadOperation,
     110: BadGeometry,
     111: NoSuchFeature,
+    112: EmptyResult,
 }
 
 
@@ -257,6 +265,43 @@ class Bridge:
     def instance_pid(self) -> int:
         """PID of the FreeCAD process actually serving this bridge."""
         return int(cast("dict[str, Any]", self._call("instance_id"))["pid"])
+
+    def measure(self, name: str, object_name: str) -> dict[str, Any]:
+        return cast("dict[str, Any]", self._call("measure", name, object_name))
+
+    def distance(
+        self,
+        name: str,
+        first: str,
+        second: str | None = None,
+        point: list[float] | None = None,
+    ) -> dict[str, Any]:
+        return cast(
+            "dict[str, Any]",
+            self._call("distance", name, first, second, point),
+        )
+
+    def is_inside(
+        self, name: str, object_name: str, point: list[float]
+    ) -> dict[str, Any]:
+        return cast(
+            "dict[str, Any]",
+            self._call("is_inside", name, object_name, [float(v) for v in point]),
+        )
+
+    def cross_section(
+        self, name: str, object_name: str, normal: list[float], offset: float
+    ) -> dict[str, Any]:
+        return cast(
+            "dict[str, Any]",
+            self._call(
+                "cross_section",
+                name,
+                object_name,
+                [float(v) for v in normal],
+                float(offset),
+            ),
+        )
 
     def describe_geometry(self, name: str, object_name: str) -> dict[str, Any]:
         return cast(
