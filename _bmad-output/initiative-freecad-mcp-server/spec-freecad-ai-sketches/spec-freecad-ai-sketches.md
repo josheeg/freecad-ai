@@ -67,7 +67,7 @@ needs; the feature tree is a much larger build with a much larger test surface.
 
 - **CAP-S9**
   - **intent:** A caller can turn a closed profile into a real planar face, which carries the area a wire cannot.
-  - **success:** A 30×15 profile becomes a face reporting one face of area 450mm², and that face is cuttable, measurable and exportable like any other object.
+  - **success:** A 30×15 profile becomes a face reporting one face of area 450mm², and that face is measurable, cuttable and exportable like any other object — verified: cutting a 3mm hole from it yields 421.7257mm² (= 450 − π·9) over two wires. It is a static snapshot, not a parametric link, and it is not extrudable: `extrude_sketch` takes a sketch.
 
 ## Constraints
 

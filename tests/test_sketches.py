@@ -463,8 +463,17 @@ def test_sketch_becomes_a_face_with_real_area(bridge: Bridge, doc: str) -> None:
     assert geometry["faces"][0]["area"] == pytest.approx(450.0, abs=1e-6)
 
 
-def test_a_face_can_be_extruded_like_any_other(bridge: Bridge, doc: str) -> None:
-    """The point of creating a face: it feeds the rest of the surface."""
+def test_a_face_is_cuttable_by_the_existing_tools(bridge: Bridge, doc: str) -> None:
+    """The point of creating a face: it feeds the rest of the surface.
+
+    Asserts the *effect* of the cut, not the solid count. An earlier version
+    asserted `solid_count == 0`, which is also what a cut that removed nothing
+    returns — so it passed for a face with no hole, or for a wire, or for
+    garbage with one planar face in it. Asserting the analytic area
+    distinguishes all of those from a real hole.
+
+    Measured against FreeCAD 1.1.3: 450.0 - pi*3^2 = 421.7257.
+    """
     bridge.add_sketch(doc, "Rect")
     for x1, y1, x2, y2 in (
         (0, 0, 30, 0),
@@ -474,10 +483,21 @@ def test_a_face_can_be_extruded_like_any_other(bridge: Bridge, doc: str) -> None
     ):
         bridge.add_sketch_line(doc, "Rect", x1, y1, x2, y2)
     bridge.sketch_to_face(doc, "Rect", "Face")
+    assert bridge.measure(doc, "Face")["area"] == pytest.approx(450.0, abs=1e-6)
+
     bridge.add_primitive(doc, "Part::Cylinder", "Hole", {"Radius": 3, "Height": 5})
     bridge.set_placement(doc, "Hole", 15, 7.5, -1)
     bridge.boolean_op(doc, "Face", "Hole", "cut", "Cut")
-    assert bridge.measure(doc, "Cut")["solid_count"] == 0
+
+    cut = bridge.measure(doc, "Cut")
+    expected = 450.0 - math.pi * 9
+    assert cut["area"] == pytest.approx(expected, abs=1e-3)
+    # Two wires: the outer boundary plus the hole's boundary. A single wire
+    # would mean the cut left the outline intact.
+    assert cut["wire_count"] == 2
+    assert cut["face_count"] == 1
+    # A face is not a solid, and must not become one by being cut.
+    assert cut["solid_count"] == 0
 
 
 def test_an_open_profile_makes_no_face(bridge: Bridge, doc: str) -> None:

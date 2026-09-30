@@ -1309,10 +1309,18 @@ def sketch_to_face(
 
     A wire encloses no area, which is why a sketch's own ``Shape.Area`` reads
     0.0. This wraps the wire in a real face, so the result has an area and can
-    be measured, exported, or extruded like any other face.
+    be measured, cut and exported like any other face.
+
+    The result is a static ``Part::Feature`` snapshot, not a parametric link:
+    editing the sketch afterwards does not update it. Same rule as AD-21 for
+    linear_array, and the tool description says so for the same reason.
+
+    It is also not extrudable through this surface - ``extrude_sketch``
+    requires a sketch - so the docstring does not claim otherwise, which an
+    earlier draft did and which no tool could satisfy.
 
     Verified against 1.1.3: a 30x15 profile gave a face of area 450.0, and
-    extruding that face 1mm gave a solid of volume 450.0.
+    cutting a 3mm hole from it gave 421.7257 = 450 - pi*9, with two wires.
     """
     import Part
 

@@ -200,7 +200,7 @@ add_sketch_line("bracket", "Profile", 0, 15, 0, 5)
 add_sketch_arc("bracket", "Profile", 5, 5, 5, 180, 270)
 
 sketch_status("bracket", "Profile")
-# {"closed": true, "edge_count": 8, "area": 778.540, "dof": 16, ...}
+# {"closed": true, "edge_count": 8, "area": 778.540, "dof": 0, ...}
 #            W*H - (4 - pi)*r^2 = 800 - 21.46 = 778.54
 
 extrude_sketch("bracket", "Profile", "Plate", depth=4.0)
@@ -209,17 +209,21 @@ measure("bracket", "Plate")
 ```
 
 A sketch can be placed on an existing face, so a profile follows a surface
-rather than a plane the caller has to compute:
+rather than a plane the caller has to compute. `FlatFace` puts the sketch
+origin at the *plane's* origin — for a box that is a corner — so a profile
+drawn in the XY plane lands in the same place on the face:
 
 ```python
 add_primitive("bracket", "Part::Box", "Base", {"Length": 40, "Width": 20, "Height": 4})
 attach_sketch_to_face("bracket", "Profile", "Base", "Face6")  # top face
-extrude_sketch("bracket", "Profile", "Boss", depth=2.0)  # volume 1600, z 4..6
+extrude_sketch("bracket", "Profile", "Boss", depth=2.0)
+# volume 1557.08  (= 778.54 * 2), spanning z 4..6
 ```
 
-A closed profile can also become a real face, which has the area a wire
-cannot have — a sketch's own area reads 0.0 — and then feeds the rest of the
-surface like any other object:
+A closed profile can also become a real face, which has the area a wire cannot
+have — a sketch's own area reads 0.0. It is a static snapshot rather than a
+parametric link, and it cannot be extruded (`extrude_sketch` takes a sketch),
+but it is cuttable and measurable like any other object:
 
 ```python
 sketch_to_face("bracket", "Profile", "Face")
@@ -239,7 +243,7 @@ commit messages, under `_bmad-output/initiative-freecad-mcp-server/`:
   `tool-surface.md`, `failure-modes.md` and `conventions.md`. What the system
   does, and what it deliberately does not.
 - **Spine** — `architecture-freecad-ai-server/architecture-freecad-ai-server.md`.
-  Twenty-one numbered decisions, AD-1…AD-21, each naming the failure it
+  Twenty-two numbered decisions, AD-1…AD-22, each naming the failure it
   prevents. These are binding on any change here.
 
 `AGENTS.md` points at both, and a test asserts the counts in all three files

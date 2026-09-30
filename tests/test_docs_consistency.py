@@ -138,6 +138,22 @@ def test_agents_md_capability_count_matches_the_spec() -> None:
     )
 
 
+def _deferred_table_lines(spine: str) -> list[str]:
+    """Every pipe-table line in the Deferred section, header and all.
+
+    Deliberately unfiltered. Callers decide which lines matter, because a
+    malformed table - one missing its header, say - still represents an open
+    question and must not be able to hide by being unparseable.
+    """
+    section = spine.split("## Deferred", 1)[-1]
+    section = re.split(r"^## ", section, maxsplit=1, flags=re.MULTILINE)[0]
+    return [
+        line
+        for line in section.splitlines()
+        if line.startswith("|") and "---" not in line
+    ]
+
+
 def _deferred_rows(spine: str) -> list[str]:
     """Body rows of the Deferred section's own table.
 
@@ -145,15 +161,26 @@ def _deferred_rows(spine: str) -> list[str]:
     exists precisely to explain what is settled - is not read as a to-do entry.
     And only up to the next heading, so a later section's table cannot be swept
     in and mistaken for this one's.
+
+    The header is dropped only when a separator follows it. Dropping
+    `rows[0]` unconditionally meant a headerless table lost its first real row,
+    so a deferred item could sit there and be invisible to every check.
     """
     section = spine.split("## Deferred", 1)[-1]
     section = re.split(r"^## ", section, maxsplit=1, flags=re.MULTILINE)[0]
-    rows = [
-        line
-        for line in section.splitlines()
-        if line.startswith("|") and "---" not in line
-    ]
-    return rows[1:]
+    lines = section.splitlines()
+    rows: list[str] = []
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        if line.startswith("|") and "---" not in line:
+            following = lines[index + 1] if index + 1 < len(lines) else ""
+            if following.startswith("|") and "---" in following:
+                index += 2  # header plus its separator
+                continue
+            rows.append(line)
+        index += 1
+    return rows
 
 
 def test_spine_defers_nothing_it_has_settled() -> None:
@@ -195,6 +222,26 @@ def test_agents_md_sketch_capability_count_matches_the_sketch_spec() -> None:
     )
     assert f"CAP-S1…CAP-S{highest}" in agents, (
         f"the sketch spec holds {highest} capabilities, which AGENTS.md does not say"
+    )
+
+
+def test_readme_decision_count_matches_the_spine() -> None:
+    """The README quotes the decision count too, and it drifted once already.
+
+    The existing test covered AGENTS.md, the spine and the specs, so this
+    second prose copy of the same binding number was outside the net. A count
+    that appears in two places needs both checked.
+    """
+    readme = _require(README)
+    spine = _require(SPINE)
+    highest = max(int(n) for n in re.findall(r"^\| AD-(\d+) \|", spine, re.MULTILINE))
+    count = _WORDS.get(highest)
+    assert count is not None, f"add a spelling for {highest} to _WORDS"
+    assert f"AD-1…AD-{highest}" in readme, (
+        f"the spine holds {highest} decisions ({count}), which the README does not say"
+    )
+    assert f"{count.capitalize()} numbered decisions" in readme, (
+        f"the README's spelled-out decision count does not match {highest}"
     )
 
 
@@ -280,16 +327,48 @@ def test_spine_defers_only_named_topics() -> None:
 
 
 def test_spine_final_implies_no_unsettled_assumptions() -> None:
-    """`status: final` must not coexist with an open [ASSUMPTION].
+    """`status: final` must not coexist with an open [ASSUMPTION] anywhere.
 
     The point of promoting the spine is that its decisions are settled. An
-    assumption still sitting in a Deferred row is the one thing that would
-    make "final" a claim rather than a fact.
+    assumption still sitting anywhere in it is the one thing that would make
+    "final" a claim rather than a fact.
+
+    Scans the whole document, not the tail after `## Deferred`. An earlier
+    version split there and searched only what followed, which passed on a
+    spine whose assumptions were all still open - the [ASSUMPTION] tags lived
+    in the deferred table's first column, above the heading, and the check
+    could not have failed. It was cited as the reason `final` was safe.
     """
     spine = _require(SPINE)
-    final = "status: final" in spine
-    section = spine.split("## Deferred", 1)[-1]
-    assert not final or "[ASSUMPTION]" not in section, (
-        "the spine is marked final but still defers an [ASSUMPTION]; either "
-        "confirm the assumption or leave the status at draft"
+    if "status: final" not in spine:
+        return
+    offenders = [
+        f"L{number}: {line.strip()}"
+        for number, line in enumerate(spine.splitlines(), start=1)
+        if "[ASSUMPTION]" in line
+    ]
+    assert not offenders, (
+        "the spine is marked final but still carries an [ASSUMPTION] at "
+        + "; ".join(offenders)
+        + ". Either confirm the assumption and drop the tag, or leave the "
+        "status at draft."
+    )
+
+
+def test_spine_final_has_no_deferred_rows() -> None:
+    """`status: final` means nothing is deferred, so the table must be empty.
+
+    Checks the raw table lines rather than the parsed rows. A malformed table
+    - one missing its header - would otherwise defeat the row parser and hide
+    a genuinely open question, which is the failure this whole check exists to
+    prevent. An empty Deferred section with no table at all is the valid shape
+    for `status: final`.
+    """
+    spine = _require(SPINE)
+    if "status: final" not in spine:
+        return
+    lines = _deferred_table_lines(spine)
+    assert not lines, (
+        "the spine is marked final but its Deferred section still contains a "
+        "table: " + "; ".join(line.strip() for line in lines)
     )

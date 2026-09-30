@@ -520,7 +520,10 @@ def attach_sketch_to_face(
     "sketch_to_face",
     "Turn a CLOSED sketch profile into a planar face object, which has a real "
     "area (a sketch's own area reads 0.0, because a wire encloses none). The "
-    "result can then be measured, exported, or extruded like any other face.",
+    "face can be measured, cut with `boolean_op`, and exported. It CANNOT be "
+    "extruded: `extrude_sketch` takes a sketch, not a face. For a solid, extrude "
+    "the sketch instead. The face is a STATIC SNAPSHOT - editing the sketch "
+    "afterwards does not update it, so re-run this tool to refresh it.",
 )
 def sketch_to_face(
     document: str,
