@@ -19,6 +19,8 @@ the FreeCAD side.
 | `add_sketch_constraint` | Add a constraint by type and the geometry it touches |
 | `sketch_status` | Closed or not, edge count, area, degrees of freedom |
 | `extrude_sketch` | Turn a closed profile into a solid of a given depth |
+| `attach_sketch_to_face` | Snap a sketch flat onto a planar face of another object |
+| `sketch_to_face` | Turn a closed profile into a real planar face |
 
 `sketch_status` is the important one. CAP-S3 requires the caller to be able to
 ask whether a profile is usable *before* extruding, and `extrude_sketch` must

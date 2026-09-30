@@ -238,6 +238,8 @@ def test_sketch_spec_status_matches_the_code() -> None:
         "add_sketch_constraint",
         "sketch_status",
         "extrude_sketch",
+        "attach_sketch_to_face",
+        "sketch_to_face",
     )
     present = [name for name in tools if f"def {name}(" in server]
     assert present, "no sketch tools found in server.py at all"
@@ -265,11 +267,29 @@ def test_spine_defers_only_named_topics() -> None:
 
     A row that is only prose is a note, and a note in a to-do list is
     indistinguishable from work nobody has claimed.
+
+    An empty table is valid and is what `status: final` looks like - every row
+    was settled. The check is on the shape of any row that exists, not on
+    there being one.
     """
     spine = _require(SPINE)
-    rows = _deferred_rows(spine)
-    assert rows, "the Deferred table has no rows"
-    for row in rows:
+    for row in _deferred_rows(spine):
         cells = [c.strip() for c in row.strip("|").split("|")]
         assert len(cells) == 3, f"Deferred row does not have three cells: {row}"
         assert all(cells), f"Deferred row has an empty cell: {row}"
+
+
+def test_spine_final_implies_no_unsettled_assumptions() -> None:
+    """`status: final` must not coexist with an open [ASSUMPTION].
+
+    The point of promoting the spine is that its decisions are settled. An
+    assumption still sitting in a Deferred row is the one thing that would
+    make "final" a claim rather than a fact.
+    """
+    spine = _require(SPINE)
+    final = "status: final" in spine
+    section = spine.split("## Deferred", 1)[-1]
+    assert not final or "[ASSUMPTION]" not in section, (
+        "the spine is marked final but still defers an [ASSUMPTION]; either "
+        "confirm the assumption or leave the status at draft"
+    )

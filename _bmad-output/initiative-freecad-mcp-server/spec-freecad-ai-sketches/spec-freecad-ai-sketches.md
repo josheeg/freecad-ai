@@ -61,6 +61,14 @@ needs; the feature tree is a much larger build with a much larger test surface.
   - **intent:** A sketch participates in the rest of the tool surface unchanged, as an ordinary object.
   - **success:** A sketch appears in `list_objects`, its edges are addressable by the same 1-based `Edge{N}` indices `fillet` and `describe_geometry` already use, and a sketch-derived solid can be cut, filleted, measured, and exported with the existing tools and no new arguments.
 
+- **CAP-S8**
+  - **intent:** A caller can snap a sketch flat onto a planar face of an existing object, so a profile follows a surface rather than a plane they must compute.
+  - **success:** A 30×15 sketch attached to the top face of a 40×20×4 box takes that face's position and extrudes normal to it — verified: volume 900mm³ spanning z 4 to 6. A non-planar face is refused by name rather than producing a degenerate placement.
+
+- **CAP-S9**
+  - **intent:** A caller can turn a closed profile into a real planar face, which carries the area a wire cannot.
+  - **success:** A 30×15 profile becomes a face reporting one face of area 450mm², and that face is cuttable, measurable and exportable like any other object.
+
 ## Constraints
 
 - **Draft is unavailable headlessly.** Every `Draft::*` type raises `TypeError` on creation in this build. No capability may depend on Draft — the same conclusion AD-21 reached for arrays, now confirmed by probe rather than assumption.

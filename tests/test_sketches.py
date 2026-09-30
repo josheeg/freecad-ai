@@ -21,6 +21,7 @@ import pytest
 from freecad_ai.bridge import (
     BadGeometry,
     Bridge,
+    NoSuchFace,
     NotASketch,
     ProfileNotClosed,
     start_headless,
@@ -375,6 +376,115 @@ def test_sketch_can_be_exported(bridge: Bridge, doc: str, tmp_path: Path) -> Non
     target = tmp_path / "from_sketch.step"
     bridge.export_object(doc, "Part", str(target))
     assert os.path.getsize(target) > 0
+
+
+# -- round two: face attachment and face creation ---------------------------
+
+
+def test_sketch_attaches_flat_to_a_planar_face(bridge: Bridge, doc: str) -> None:
+    """A sketch on a box's top face takes that face's position and extrudes
+    normal to it.
+
+    Verified before the tool was written: a 30x15 profile attached to Face6 of a
+    40x20x4 box moved to z=4 and extruded 2mm gave 900mm3 spanning z 4 to 6.
+    """
+    bridge.add_primitive(
+        doc, "Part::Box", "Box", {"Length": 40, "Width": 20, "Height": 4}
+    )
+    bridge.add_sketch(doc, "OnFace")
+    for x1, y1, x2, y2 in (
+        (0, 0, 30, 0),
+        (30, 0, 30, 15),
+        (30, 15, 0, 15),
+        (0, 15, 0, 0),
+    ):
+        bridge.add_sketch_line(doc, "OnFace", x1, y1, x2, y2)
+
+    result = bridge.attach_sketch_to_face(doc, "OnFace", "Box", "Face6")
+    assert result["map_mode"] == "FlatFace"
+    assert result["placement"] == [0.0, 0.0, 4.0]
+
+    bridge.extrude_sketch(doc, "OnFace", "Pad", 2.0)
+    summary = bridge.shape_summary(doc, "Pad")
+    assert summary["volume"] == pytest.approx(900.0, abs=1e-6)
+    # bbox is [xmin, ymin, zmin, xmax, ymax, zmax]; the box top is z=4
+    assert summary["bbox"][2] == pytest.approx(4.0, abs=1e-6)
+    assert summary["bbox"][5] == pytest.approx(6.0, abs=1e-6)
+
+
+def test_attaching_to_a_curved_face_is_refused(bridge: Bridge, doc: str) -> None:
+    """Only a plane can carry a flat sketch.
+
+    A cylinder's side face is a Cylinder surface, and attaching to it would
+    produce a degenerate placement rather than an error.
+    """
+    bridge.add_primitive(doc, "Part::Cylinder", "Cyl", {"Radius": 10, "Height": 20})
+    faces = bridge.describe_geometry(doc, "Cyl")["faces"]
+    curved = next(f for f in faces if f["type"] == "Cylinder")
+    bridge.add_sketch(doc, "S")
+    bridge.add_sketch_line(doc, "S", 0, 0, 5, 0)
+    with pytest.raises(NoSuchFace):
+        bridge.attach_sketch_to_face(doc, "S", "Cyl", curved["name"])
+
+
+def test_attaching_to_a_missing_face_is_refused(bridge: Bridge, doc: str) -> None:
+    bridge.add_primitive(
+        doc, "Part::Box", "Box", {"Length": 10, "Width": 10, "Height": 10}
+    )
+    bridge.add_sketch(doc, "S")
+    bridge.add_sketch_line(doc, "S", 0, 0, 5, 0)
+    with pytest.raises(NoSuchFace):
+        bridge.attach_sketch_to_face(doc, "S", "Box", "Face99")
+    with pytest.raises(BadGeometry):
+        bridge.attach_sketch_to_face(doc, "S", "Box", "face6")  # case matters
+
+
+def test_sketch_becomes_a_face_with_real_area(bridge: Bridge, doc: str) -> None:
+    """A wire encloses no area; a face does.
+
+    The trap is that a sketch's *own* ``Shape.Area`` is 0.0 for this profile.
+    ``sketch_status`` works around that by building a Part.Face, which is why
+    it already reports 450. This asserts the face object proper, which is what
+    the new tool creates.
+    """
+    bridge.add_sketch(doc, "Rect")
+    for x1, y1, x2, y2 in (
+        (0, 0, 30, 0),
+        (30, 0, 30, 15),
+        (30, 15, 0, 15),
+        (0, 15, 0, 0),
+    ):
+        bridge.add_sketch_line(doc, "Rect", x1, y1, x2, y2)
+    assert bridge.sketch_status(doc, "Rect")["area"] == pytest.approx(450.0, abs=1e-6)
+
+    bridge.sketch_to_face(doc, "Rect", "Face")
+    geometry = bridge.describe_geometry(doc, "Face")
+    assert geometry["face_count"] == 1
+    assert geometry["faces"][0]["area"] == pytest.approx(450.0, abs=1e-6)
+
+
+def test_a_face_can_be_extruded_like_any_other(bridge: Bridge, doc: str) -> None:
+    """The point of creating a face: it feeds the rest of the surface."""
+    bridge.add_sketch(doc, "Rect")
+    for x1, y1, x2, y2 in (
+        (0, 0, 30, 0),
+        (30, 0, 30, 15),
+        (30, 15, 0, 15),
+        (0, 15, 0, 0),
+    ):
+        bridge.add_sketch_line(doc, "Rect", x1, y1, x2, y2)
+    bridge.sketch_to_face(doc, "Rect", "Face")
+    bridge.add_primitive(doc, "Part::Cylinder", "Hole", {"Radius": 3, "Height": 5})
+    bridge.set_placement(doc, "Hole", 15, 7.5, -1)
+    bridge.boolean_op(doc, "Face", "Hole", "cut", "Cut")
+    assert bridge.measure(doc, "Cut")["solid_count"] == 0
+
+
+def test_an_open_profile_makes_no_face(bridge: Bridge, doc: str) -> None:
+    bridge.add_sketch(doc, "Open")
+    bridge.add_sketch_line(doc, "Open", 0, 0, 30, 0)
+    with pytest.raises(ProfileNotClosed):
+        bridge.sketch_to_face(doc, "Open", "Nope")
 
 
 # -- input validation ------------------------------------------------------

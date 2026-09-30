@@ -174,6 +174,13 @@ class NoSuchConstraint(BridgeError):
     )
 
 
+class NoSuchFace(BridgeError):
+    hint = (
+        "That face does not exist, or it is not planar. Call `describe_geometry` "
+        "to list the faces, and note a sketch can only attach flat to a plane."
+    )
+
+
 class BridgeInternalError(BridgeError):
     """The bridge raised an unclassified exception."""
 
@@ -210,6 +217,7 @@ _FAULT_MAP: dict[int, type[BridgeError]] = {
     113: ProfileNotClosed,
     114: NotASketch,
     115: NoSuchConstraint,
+    116: NoSuchFace,
 }
 
 
@@ -567,6 +575,19 @@ class Bridge:
             str,
             self._call("extrude_sketch", name, sketch_name, result_name, _dim(depth)),
         )
+
+    def attach_sketch_to_face(
+        self, name: str, sketch_name: str, target: str, face_name: str
+    ) -> dict[str, Any]:
+        return cast(
+            "dict[str, Any]",
+            self._call(
+                "attach_sketch_to_face", name, sketch_name, target, str(face_name)
+            ),
+        )
+
+    def sketch_to_face(self, name: str, sketch_name: str, result_name: str) -> str:
+        return cast(str, self._call("sketch_to_face", name, sketch_name, result_name))
 
     def get_properties(self, name: str, object_name: str) -> dict[str, Any]:
         return cast("dict[str, Any]", self._call("get_properties", name, object_name))

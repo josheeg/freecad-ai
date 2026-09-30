@@ -53,6 +53,7 @@ FAULT_EMPTY_RESULT = 112
 FAULT_PROFILE_NOT_CLOSED = 113
 FAULT_NOT_A_SKETCH = 114
 FAULT_NO_SUCH_CONSTRAINT = 115
+FAULT_NO_SUCH_FACE = 116
 
 # FreeCAD 1.1 has no generic Part::Boolean; each operation is its own
 # parametric feature type with Base and Tool links. Verified against 1.1.3.
@@ -1233,6 +1234,104 @@ def sketch_status(document: str, sketch_name: str) -> dict[str, Any]:
         except Exception:
             result["area"] = 0.0
     return result
+
+
+def attach_sketch_to_face(
+    document: str,
+    sketch_name: str,
+    target: str,
+    face_name: str,
+) -> dict[str, Any]:
+    """Snap a sketch onto a planar face of another object, flat to it.
+
+    The sketch takes the face's position and orientation and extrudes normal to
+    it, so a profile can be drawn on a surface rather than in a plane the
+    caller has to compute. Verified against 1.1.3: attaching a 30x15 sketch to
+    the top face of a box moved it to z=4 and extruding 2mm gave 900mm3
+    spanning z 4 to 6.
+
+    ``face_name`` is a ``Face{N}`` index as reported by describe_geometry.
+    FreeCAD's property is ``AttachmentSupport``; the FreeCAD 0.x name was
+    ``Support``, which raises here.
+    """
+    import re as _re
+
+    import Part
+
+    doc = _require(document)
+    sketch = _sketch(document, sketch_name)
+    host = _object(doc, target)
+
+    match = _re.fullmatch(r"Face(\d+)", str(face_name))
+    if match is None:
+        _fail(
+            FAULT_BAD_GEOMETRY,
+            f"face must look like Face3, got {face_name!r}; call "
+            f"describe_geometry on {target} to list its faces",
+        )
+    index = int(match.group(1))
+    shape = getattr(host, "Shape", None)
+    if shape is None or shape.isNull():
+        _fail(FAULT_NO_SHAPE, f"{target} has no shape to attach to")
+    if not 1 <= index <= len(shape.Faces):
+        _fail(
+            FAULT_NO_SUCH_FACE,
+            f"{target} has {len(shape.Faces)} faces, so {face_name} does not exist",
+        )
+    face = shape.Faces[index - 1]
+    # Only a planar face can carry a flat sketch. Refusing here beats an
+    # attachment that silently produces a degenerate placement.
+    if not isinstance(face.Surface, Part.Plane):
+        _fail(
+            FAULT_NO_SUCH_FACE,
+            f"{face_name} of {target} is a {type(face.Surface).__name__}, not a "
+            f"plane; a sketch can only be attached flat to a planar face",
+        )
+
+    sketch.AttachmentSupport = [(host, (face_name,))]
+    sketch.MapMode = "FlatFace"
+    doc.recompute()
+    return {
+        "sketch": sketch_name,
+        "attached_to": target,
+        "face": face_name,
+        "map_mode": sketch.MapMode,
+        "placement": _vec(sketch.Placement.Base),
+    }
+
+
+def sketch_to_face(
+    document: str,
+    sketch_name: str,
+    result_name: str,
+) -> str:
+    """Turn a closed sketch profile into a planar face object.
+
+    A wire encloses no area, which is why a sketch's own ``Shape.Area`` reads
+    0.0. This wraps the wire in a real face, so the result has an area and can
+    be measured, exported, or extruded like any other face.
+
+    Verified against 1.1.3: a 30x15 profile gave a face of area 450.0, and
+    extruding that face 1mm gave a solid of volume 450.0.
+    """
+    import Part
+
+    doc = _require(document)
+    sketch = _sketch(document, sketch_name)
+    # Same closedness check as extrude_sketch: a face needs a closed outline,
+    # and Part.Face on an open wire does not raise, it returns something wrong.
+    wire = _profile_wire(sketch)
+
+    feature = _feature(result_name, "Part::Feature", document)
+    face = Part.Face(Part.Wire(wire.Edges))
+    if face.Area <= 0.0:
+        _fail(
+            FAULT_EMPTY_RESULT,
+            f"{sketch_name} encloses no area, so it makes no face; check sketch_status",
+        )
+    feature.Shape = face
+    doc.recompute()
+    return feature.Name
 
 
 def extrude_sketch(

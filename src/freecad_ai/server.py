@@ -502,6 +502,35 @@ def extrude_sketch(
 
 
 @_tool(
+    "attach_sketch_to_face",
+    "Snap a sketch flat onto a planar face of another object, so it takes that "
+    "face's position and orientation and extrudes normal to it. `face_name` is "
+    "a Face{N} index from `describe_geometry`; a non-planar face is refused.",
+)
+def attach_sketch_to_face(
+    document: str,
+    sketch_name: str,
+    target: str,
+    face_name: str,
+) -> dict[str, Any]:
+    return get_bridge().attach_sketch_to_face(document, sketch_name, target, face_name)
+
+
+@_tool(
+    "sketch_to_face",
+    "Turn a CLOSED sketch profile into a planar face object, which has a real "
+    "area (a sketch's own area reads 0.0, because a wire encloses none). The "
+    "result can then be measured, exported, or extruded like any other face.",
+)
+def sketch_to_face(
+    document: str,
+    sketch_name: str,
+    result_name: str,
+) -> str:
+    return get_bridge().sketch_to_face(document, sketch_name, result_name)
+
+
+@_tool(
     "boolean_op",
     "Combine two objects into a new one. operation is cut, fuse or common. "
     "Both inputs are kept; the result is a new parametric feature.",

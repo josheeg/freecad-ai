@@ -146,7 +146,7 @@ src/freecad_ai/_freecad_bridge.py  runs under FreeCAD's bundled Python 3.11;
                                   the only file permitted to import FreeCAD,
                                   launched by path and never imported
 src/freecad_ai/bridge.py           XML-RPC client and process launcher (3.14)
-src/freecad_ai/server.py           MCP server, 32 tools over stdio
+src/freecad_ai/server.py           MCP server, 34 tools over stdio
 scripts/freecad_procs.py           reports or stops leaked FreeCAD processes
 ```
 
@@ -179,6 +179,56 @@ shape_summary("bracket", "Rounded")  # volume 3142.87 (3149.73 − 6.87 of round
 `linear_array` is the one tool whose result is not parametric: it fuses static
 copies, so editing the source afterwards does not update the array. Re-run it
 to change the pattern.
+
+### Sketches
+
+Most real parts begin as a 2D profile, and the sketch tools go from a profile
+to a solid. **Check `sketch_status` before `extrude_sketch`** — an unclosed
+profile does not fail at extrude time, it produces a *wrong solid*, so the
+server refuses one explicitly.
+
+```python
+add_sketch("bracket", "Profile")
+# a 40x20 plate with 5mm rounded corners
+add_sketch_line("bracket", "Profile", 5, 0, 35, 0)
+add_sketch_arc("bracket", "Profile", 35, 5, 5, -90, 0)
+add_sketch_line("bracket", "Profile", 40, 5, 40, 15)
+add_sketch_arc("bracket", "Profile", 35, 15, 5, 0, 90)
+add_sketch_line("bracket", "Profile", 35, 20, 5, 20)
+add_sketch_arc("bracket", "Profile", 5, 15, 5, 90, 180)
+add_sketch_line("bracket", "Profile", 0, 15, 0, 5)
+add_sketch_arc("bracket", "Profile", 5, 5, 5, 180, 270)
+
+sketch_status("bracket", "Profile")
+# {"closed": true, "edge_count": 8, "area": 778.540, "dof": 16, ...}
+#            W*H - (4 - pi)*r^2 = 800 - 21.46 = 778.54
+
+extrude_sketch("bracket", "Profile", "Plate", depth=4.0)
+measure("bracket", "Plate")
+# volume 3114.16  (= 778.54 * 4), solid_count 1
+```
+
+A sketch can be placed on an existing face, so a profile follows a surface
+rather than a plane the caller has to compute:
+
+```python
+add_primitive("bracket", "Part::Box", "Base", {"Length": 40, "Width": 20, "Height": 4})
+attach_sketch_to_face("bracket", "Profile", "Base", "Face6")  # top face
+extrude_sketch("bracket", "Profile", "Boss", depth=2.0)  # volume 1600, z 4..6
+```
+
+A closed profile can also become a real face, which has the area a wire
+cannot have — a sketch's own area reads 0.0 — and then feeds the rest of the
+surface like any other object:
+
+```python
+sketch_to_face("bracket", "Profile", "Face")
+describe_geometry("bracket", "Face")  # face_count 1, area 778.540
+```
+
+Everything from there is the existing surface: `boolean_op`, `fillet`,
+`chamfer`, `measure`, `export_object` all work on a sketch-derived solid with
+no new arguments.
 
 ## Specification
 

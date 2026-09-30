@@ -168,6 +168,59 @@ register them. `linear_array` is therefore built from a `Part::MultiFuse` of
 translated copies, which needs no workbench. The copies become static
 `Part::Feature` objects rather than a parametric array.
 
+## Sketches
+
+### An unclosed profile extrudes to a wrong solid, not an error
+
+`Part::Extrusion` with `Solid=True` over an open wire returns a *shape*. Probed:
+a five-edge profile with a mis-spanned arc came out not closed, and the result
+had a 50mm edge where 20mm had been drawn. `_profile_wire` checks closedness
+explicitly and names the endpoints that fail to meet; `extrude_sketch` and
+`sketch_to_face` both refuse rather than attempt it.
+
+Enforced by `test_open_profile_is_refused_rather_than_extruded` and
+`test_an_open_profile_makes_no_face`.
+
+### `Sketcher.Constraint` with six arguments terminates FreeCAD
+
+The value form applied to a two-element constraint does not raise — it *kills
+the interpreter*, taking every open document with it. The four-argument form
+returns normally. `add_sketch_constraint` picks the arity per constraint kind
+and rejects an unknown `kind` against a known set before constructing anything.
+This is AD-22 in the spine.
+
+Enforced by `test_unknown_constraint_kind_is_refused_without_crashing`.
+
+### A sketch's `Shape.Area` is 0.0
+
+A wire encloses no area, so a closed profile still reports 0.0. Get area from
+`Part.Face(Part.Wire(edges))`, which is what `sketch_status` does and what
+`sketch_to_face` makes permanent.
+
+### `Part.Edge` has no `.Name` on 1.1
+
+`Edge1`, `Edge2` … are **synthesized by the bridge** from index position, not
+read off the edge. Reading a name raises `AttributeError`.
+
+### Attachment uses `AttachmentSupport`, not `Support`
+
+`Support` is the FreeCAD 0.x name and raises on 1.1. The property pair is
+`AttachmentSupport` plus `MapMode`, and only a `Part.Plane` face will take
+`FlatFace` — a cylinder's side face is a `Cylinder` surface and is refused by
+name.
+
+### An extrusion captures the sketch's placement when it is created
+
+Moving a sketch afterwards does not move a solid already extruded. Position
+first, then extrude.
+
+### Draft is unavailable headlessly
+
+Every `Draft::*` type — `Wire`, `Rectangle`, `Circle`, `Polygon`, `BSpline`,
+`Ellipse`, `Shape2D` — raises `TypeError` on `addObject`. No capability may
+depend on Draft. This is the same conclusion AD-21 reached for arrays, now
+measured rather than assumed.
+
 ## Tooling
 
 `_freecad_bridge.py` runs under FreeCAD's bundled 3.11, so it is excluded

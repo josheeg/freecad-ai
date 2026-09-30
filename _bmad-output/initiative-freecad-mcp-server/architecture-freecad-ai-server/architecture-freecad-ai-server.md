@@ -5,9 +5,9 @@ purpose: build-substrate
 altitude: initiative
 paradigm: process-boundary ports-and-adapters
 scope: The freecad-ai MCP server — its process boundary, tool layer, bridge protocol, and the tooling that keeps them honest
-status: draft
+status: final
 created: '2026-09-30'
-updated: '2026-09-30'
+updated: '2026-10-01'
 binds:
   - CAP-1
   - CAP-2
@@ -183,24 +183,27 @@ these turns out to be load-bearing, promote it to an AD.
 
 ## Deferred
 
-Not decided here. Each is named so a later unit does not treat silence as
-approval.
-
-| deferred | why | what it would change |
-| --- | --- | --- |
-| Multi-user or a shared long-lived service | `[ASSUMPTION]` single user, single machine | The loopback-only bind in AD-15, which is the only thing enforcing that assumption |
-| Multi-process or concurrent callers | `[ASSUMPTION]` single caller; AD-7 serialises bridge calls, and AD-17 forbids caller-side read-modify-write | Whether `start_headless` needs reference counting or a per-port lock |
-| The sketch tool surface | Specced separately at `spec-freecad-ai-sketches/`, deliberately not folded into this spine. Three questions remain open there: whether to expose `DirMode`, whether geometry is addressable by name or only index, and whether `PartDesign::Pad` is exposed alongside `Part::Extrusion` | The tool layer's shape. A sketch-derived solid is an ordinary object to every existing tool, so this stays additive |
+Nothing remains. Each row that was here has been settled, and the ones that
+were assumptions are now confirmed facts rather than untested positions.
 
 Settled rather than deferred, and now binding:
 
+- **Single user, single machine, single caller.** Confirmed by the maintainer
+  rather than assumed by a build. This is what makes AD-15's loopback-only bind
+  a settled constraint rather than a provisional one, and it is why
+  `start_headless` needs no per-port lock: nothing else races it for the port.
+  The one process-ownership rule that does apply is AD-20, which stands
+  regardless of caller count.
 - **Parametric arrays are not coming.** `linear_array` stays a fused set of
   static copies; Draft's workbench is not loaded to obtain parametric
   behaviour. See AD-21.
-- **No GUI target.** AD-15 is now absolute, not provisional: a GUI path is out
-  of scope, not merely untested.
+- **No GUI target.** AD-15 is absolute, not provisional: a GUI path is out of
+  scope, not merely untested.
 - **No publishing.** Local installation is the end state, so there is no
   release workflow and no support policy to maintain.
+
+Revisiting any of these is a scope change, not a clarification, and belongs in a
+new AD with its reasoning rather than an edit to this section.
 
 ## Versions
 

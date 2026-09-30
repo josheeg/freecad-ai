@@ -87,6 +87,8 @@ def test_every_tool_is_registered(registry: Any) -> None:
         "add_sketch_constraint",
         "sketch_status",
         "extrude_sketch",
+        "attach_sketch_to_face",
+        "sketch_to_face",
     }
 
 
