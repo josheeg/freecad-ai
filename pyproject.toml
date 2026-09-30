@@ -1,0 +1,60 @@
+[project]
+name = "freecad-ai"
+version = "0.1.0"
+description = "MCP server that drives FreeCAD 1.1 over an XML-RPC bridge"
+readme = "README.md"
+authors = [
+    { name = "josheeg", email = "josheeg@gmail.com" }
+]
+requires-python = ">=3.14"
+dependencies = [
+    "mcp>=2.2.0",
+]
+
+[project.scripts]
+freecad-ai = "freecad_ai:main"
+
+[build-system]
+requires = ["uv_build>=0.12.12,<0.13.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "mypy>=2.3.1",
+    "pytest>=9.1.1",
+    "ruff>=0.16.9",
+]
+
+# Vendored tool trees: upstream code we do not own. Excluded from lint and
+# test collection so tooling reports on this project's code only.
+[tool.ruff]
+line-length = 88
+src = ["src", "tests"]
+extend-exclude = [
+    "_bmad",
+    ".agents",
+    ".claude",
+    ".continue",
+    ".goose",
+    ".kilo",
+    ".opencode",
+    ".openhands",
+    ".roo",
+    ".specify",
+]
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "B", "UP", "SIM", "RUF"]
+
+[tool.mypy]
+python_version = "3.14"
+files = ["src"]
+strict = true
+warn_unreachable = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers --strict-config"
+markers = [
+    "integration: requires a live freecadcmd process",
+]
