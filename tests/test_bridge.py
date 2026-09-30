@@ -171,6 +171,31 @@ def test_explicit_arguments_beat_the_environment(monkeypatch: Any) -> None:
     assert Bridge(port=9999).port == 9999
 
 
+def test_freecad_output_streams_are_never_piped(monkeypatch: Any) -> None:
+    """FreeCAD's output must not be captured, or the bridge deadlocks.
+
+    FreeCAD writes "Recompute......" progress output continuously. With
+    subprocess.PIPE and nothing reading them, the ~64KB pipe buffer fills,
+    FreeCAD blocks in write(), and it stops answering the bridge entirely.
+    The process is still alive, so this presents as a hang rather than an
+    error, and only a heavy workload reaches the buffer limit.
+
+    Readiness is confirmed by ping, so the streams carry nothing we need.
+    """
+    captured: dict[str, Any] = {}
+
+    def spy(*args: Any, **kwargs: Any) -> Any:
+        captured.update(kwargs)
+        raise RuntimeError("stop after Popen")
+
+    monkeypatch.setattr(bridge_module.subprocess, "Popen", spy)
+    with pytest.raises(RuntimeError, match="stop after Popen"):
+        bridge_module.start_headless()
+
+    assert captured["stdout"] is subprocess.DEVNULL
+    assert captured["stderr"] is subprocess.DEVNULL
+
+
 def test_fault_codes_map_to_typed_errors() -> None:
     """Each bridge fault code must raise its own exception class.
 

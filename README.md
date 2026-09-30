@@ -49,6 +49,7 @@ itself launches instantly. It runs headless — no GUI instance is started.
 | `new_document` | Create a document, or return the existing one (`reuse=False` to insist) |
 | `open_document` / `save_document` | Document lifecycle |
 | `list_documents` | List open documents — returns `{"documents": [...]}` |
+| `list_primitive_types` | Part types this FreeCAD can create, with their properties |
 | `add_primitive` | Add a Part primitive (`Part::Box`, `Part::Cylinder`, …) |
 | `list_objects` | Objects in a document — returns `{"objects": [...]}` |
 | `get_properties` / `set_property` | Read and write object properties |
@@ -77,6 +78,16 @@ A failing tool returns a result carrying the failure rather than crashing:
 `kind` is a stable class name and `hint` says what to do next, so an agent can
 recover instead of guessing. Most failures are a missing document, object or
 property — not a broken server.
+
+## Configuration
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `FREECAD_AI_PORT` | `9875` | Bridge port |
+| `FREECAD_AI_HOST` | `127.0.0.1` | Bind address — **leave it on loopback** |
+
+The bridge is unauthenticated. Anyone who can reach the port has full control
+of FreeCAD, so do not widen the bind address.
 
 ## Development
 

@@ -41,6 +41,7 @@ MCP server that lets an AI assistant drive FreeCAD 1.1. Python, `uv`, packaged w
 - MCPServer runs **synchronous** tool functions on anyio's worker thread pool, so parallel tool calls reach the shared `ServerProxy` from several threads. Its single `HTTPConnection` raises `CannotSendRequest` / `ResponseNotReady` rather than queueing. `Bridge` holds a `threading.Lock` for this; do not remove it.
 - A tool returning a **list** is silently truncated: MCPServer's `_convert_to_content` treats a list as a sequence of content blocks and chains them, so only the first element reaches the client. Every tool must return a dict or string — `_tool` wraps stray lists as `{"items": ...}` as a backstop.
 - A tool's **return annotation becomes an output schema** that every result is validated against. A tool annotated `-> list[dict]` rejects the error payload as a type mismatch and resurfaces as `UnexpectedToolError`. The `_tool` decorator therefore publishes `__signature__` with a widened return; do not remove it.
+- FreeCAD's output streams must stay `DEVNULL`. FreeCAD writes `Recompute......` progress output continuously; capturing it with `subprocess.PIPE` and never reading fills the ~64KB buffer, after which FreeCAD blocks in `write()` and stops answering. The process is still alive, so it presents as a hang, not a crash.
 - `xmlrpc.client` serialises any uncaught bridge exception as `faultCode 1`, so the bridge's own codes start at 100. Mapping 1 to a named condition misreports ordinary `TypeError`s.
 
 <!-- /bmad:context -->

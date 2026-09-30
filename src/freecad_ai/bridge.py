@@ -345,6 +345,11 @@ def start_headless(
     if os.name == "nt":
         creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
+    # DEVNULL, not PIPE. FreeCAD writes progress output ("Recompute......")
+    # continuously while modelling and exporting; an unread pipe fills its
+    # ~64KB buffer, after which FreeCAD blocks in write() and stops answering
+    # the bridge entirely. Nothing reads these streams, so capturing them only
+    # creates a deadlock. Readiness is confirmed by ping, not by output.
     process = subprocess.Popen(
         [
             str(freecadcmd_path()),
@@ -352,8 +357,8 @@ def start_headless(
             resolved_host,
             str(resolved_port),
         ],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
         creationflags=creationflags,
     )
     try:
