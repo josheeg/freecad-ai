@@ -642,6 +642,27 @@ def _vec(value: Any) -> list[float]:
     return [round(value.x, 6), round(value.y, 6), round(value.z, 6)]
 
 
+def _center_of_mass(shape: Any) -> list[float]:
+    """Centroid of a shape, tolerating the types that do not provide one.
+
+    Compounds — which is what a fuse or a cut returns — have no
+    ``CenterOfMass``. Measuring the result of an operation is the main reason
+    this function exists, so it must not raise on the objects callers care
+    about most.
+    """
+    try:
+        return _vec(shape.CenterOfMass)
+    except AttributeError:
+        pass
+    try:
+        solids = shape.Solids
+        if solids:
+            return _vec(solids[0].CenterOfMass)
+    except AttributeError, IndexError:
+        pass
+    return []
+
+
 def measure(document: str, object_name: str) -> dict[str, Any]:
     """Report a shape's mass properties and topology.
 
@@ -658,7 +679,11 @@ def measure(document: str, object_name: str) -> dict[str, Any]:
         "is_closed": bool(shape.isClosed()),
         "volume": shape.Volume,
         "area": shape.Area,
-        "center_of_mass": _vec(shape.CenterOfMass),
+        # CenterOfMass exists on solids and faces, not on compounds — and a
+        # fused or cut result is a Compound, which is exactly what a caller
+        # most wants to measure. Fall back to the first solid, and report
+        # nothing rather than failing when there is none.
+        "center_of_mass": _center_of_mass(shape),
         "bounding_box": [
             box.XMin,
             box.YMin,
@@ -679,27 +704,32 @@ def measure(document: str, object_name: str) -> dict[str, Any]:
 def distance(
     document: str,
     first: str,
-    second: str | None = None,
-    point: list[float] | None = None,
+    second: Any = "",
+    point: Any = None,
 ) -> dict[str, Any]:
     """Closest distance between two objects, or between a point and an object.
+
+    The caller sends an empty value for the argument it is not using, because
+    XML-RPC cannot marshal None and this bridge runs with allow_none=False.
 
     Overlapping solids legitimately have distance 0; that is a position
     question, not an error.
     """
     shape = _shape_of(document, first)
-    if (second is None) == (point is None):
+    use_object = bool(second)
+    use_point = bool(point)
+    if use_object == use_point:
         _fail(
             FAULT_BAD_GEOMETRY,
             "give exactly one of second (another object) or point (3 values)",
         )
         return {}
 
-    if second is not None:
-        other = _shape_of(document, second)
+    if use_object:
+        other = _shape_of(document, str(second))
         gap, points, _ = shape.distToShape(other)
         result: dict[str, Any] = {
-            "between": [first, second],
+            "between": [first, str(second)],
             "distance": gap,
         }
         if points:
@@ -707,14 +737,14 @@ def distance(
             result["point_on_second"] = _vec(points[0][1])
         return result
 
-    if len(point or []) != 3:
+    if len(point) != 3:
         _fail(FAULT_BAD_GEOMETRY, "point must have 3 values")
         return {}
     import Part
 
     vertex = Part.Vertex(*(float(v) for v in point))
     gap, points, _ = vertex.distToShape(shape)
-    result = {"between": [first, list(point)], "distance": gap}
+    result = {"between": [first, [float(v) for v in point]], "distance": gap}
     if points:
         result["point_on_object"] = _vec(points[0][1])
     return result

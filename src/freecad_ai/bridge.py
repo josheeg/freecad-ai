@@ -276,9 +276,18 @@ class Bridge:
         second: str | None = None,
         point: list[float] | None = None,
     ) -> dict[str, Any]:
+        # XML-RPC cannot marshal None, and this proxy is built with
+        # allow_none=False. Send empty values for the argument not in use and
+        # let the bridge read their absence from that.
         return cast(
             "dict[str, Any]",
-            self._call("distance", name, first, second, point),
+            self._call(
+                "distance",
+                name,
+                first,
+                second or "",
+                [float(v) for v in point] if point else [],
+            ),
         )
 
     def is_inside(
