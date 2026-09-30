@@ -126,6 +126,17 @@ class BadOperation(BridgeError):
     hint = "Operation must be cut, fuse or common, and the two objects must differ."
 
 
+class BadGeometry(BridgeError):
+    hint = (
+        "Call describe_geometry for the edge names, then use indices that "
+        "exist and a radius or size that fits."
+    )
+
+
+class NoSuchFeature(BridgeError):
+    hint = "This FreeCAD build does not provide that object type."
+
+
 class BridgeInternalError(BridgeError):
     """The bridge raised an unclassified exception."""
 
@@ -156,6 +167,8 @@ _FAULT_MAP: dict[int, type[BridgeError]] = {
     107: ExportFailed,
     108: SaveFailed,
     109: BadOperation,
+    110: BadGeometry,
+    111: NoSuchFeature,
 }
 
 
