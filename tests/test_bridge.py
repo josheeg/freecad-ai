@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import re
 import subprocess
+import time
 import xmlrpc.client
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -97,6 +99,42 @@ def test_export_object_forwards_all_arguments() -> None:
     assert proxy.calls == [
         ("export_object", ("Doc", "Box", "C:/out/part.step"))
     ]
+
+
+def test_bridge_serialises_calls() -> None:
+    """The client must hold a lock; the shared proxy cannot be re-entered.
+
+    MCPServer runs sync tool functions on a worker thread pool, so concurrent
+    calls arrive from several threads. Without the lock the underlying
+    HTTPConnection raises CannotSendRequest / ResponseNotReady.
+    """
+    lock = Bridge()._lock
+    assert hasattr(lock, "acquire")
+    assert lock.acquire(blocking=False)
+    lock.release()
+
+
+def test_concurrent_calls_do_not_interleave() -> None:
+    """Overlapping calls must be serialised, not raced."""
+    overlap: list[int] = []
+    active = [0]
+
+    class SlowProxy:
+        def dispatch(self, name: str, *args: object) -> str:
+            active[0] += 1
+            overlap.append(active[0])
+            time.sleep(0.01)
+            active[0] -= 1
+            return "ok"
+
+    instance = Bridge()
+    instance._proxy = SlowProxy()
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        results = [f.result() for f in [pool.submit(instance.ping) for _ in range(4)]]
+
+    assert results == ["ok"] * 4
+    assert max(overlap) == 1, "calls overlapped inside the bridge"
 
 
 def test_fault_codes_map_to_typed_errors() -> None:

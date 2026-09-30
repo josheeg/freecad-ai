@@ -7,8 +7,10 @@ socket-style boundary is that the two never share one.
 
 from __future__ import annotations
 
+import http.client
 import os
 import subprocess
+import threading
 import time
 import xmlrpc.client
 from pathlib import Path
@@ -125,24 +127,36 @@ def _raise_fault(error: xmlrpc.client.Fault) -> None:
 
 
 class Bridge:
-    """Synchronous XML-RPC client for a running FreeCAD bridge."""
+    """Synchronous XML-RPC client for a running FreeCAD bridge.
+
+    Not thread-safe on its own: MCPServer runs synchronous tool functions on
+    anyio's worker thread pool, so parallel tool calls reach one shared
+    ``ServerProxy`` from several threads at once. That object's single
+    ``HTTPConnection`` cannot serve overlapping requests and raises
+    ``CannotSendRequest`` or ``ResponseNotReady`` instead of queueing.
+
+    Every call is therefore serialised. FreeCAD's ``SimpleXMLRPCServer`` is
+    single-threaded too, so this matches the server rather than fighting it.
+    """
 
     def __init__(self, host: str = DEFAULT_HOST, port: int = DEFAULT_PORT) -> None:
         self._proxy = xmlrpc.client.ServerProxy(
             f"http://{host}:{port}/", allow_none=False
         )
+        self._lock = threading.Lock()
 
     def _call(self, name: str, *args: Any) -> Any:
         """Invoke a bridge function. The XML-RPC wire format is untyped, so
         every public method casts this result to its declared return type."""
-        try:
-            return self._proxy.dispatch(name, *args)
-        except xmlrpc.client.Fault as error:
-            _raise_fault(error)
-        except (OSError, xmlrpc.client.ProtocolError) as error:
-            raise BridgeUnreachable(
-                f"cannot reach the FreeCAD bridge on {self._proxy}: {error}"
-            ) from error
+        with self._lock:
+            try:
+                return self._proxy.dispatch(name, *args)
+            except xmlrpc.client.Fault as error:
+                _raise_fault(error)
+            except (OSError, http.client.HTTPException) as error:
+                raise BridgeUnreachable(
+                    f"cannot reach the FreeCAD bridge on {self._proxy}: {error}"
+                ) from error
         raise BridgeError(f"{name} returned no result")  # pragma: no cover
 
     def ping(self) -> str:

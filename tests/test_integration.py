@@ -7,9 +7,10 @@ Deselect while iterating:  ``uv run pytest -m "not integration"``.
 from __future__ import annotations
 
 import subprocess
+import uuid
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Any
 
 import pytest
 
@@ -118,8 +119,12 @@ def drilled(bridge: Bridge) -> str:
 
     Expected volumes, from the FreeCAD 1.1 solver: box 1000, cylinder through
     the full height pi*2^2*10 = 125.664.
+
+    Each test gets its own document. A shared one would accumulate primitives
+    and boolean features, and every `recompute` would walk the whole growing
+    tree.
     """
-    document = bridge.new_document("drilled")["name"]
+    document = bridge.new_document(f"drilled_{uuid.uuid4().hex[:8]}")["name"]
     bridge.add_primitive(
         document, "Part::Box", "Plate", {"Length": 10.0, "Width": 10.0, "Height": 10.0}
     )
@@ -181,6 +186,37 @@ def test_boolean_result_is_exportable(
     target = tmp_path / "drilled.step"
     bridge.export_object(drilled, "Exportable", str(target))
     assert target.stat().st_size > 0
+
+
+@pytest.mark.integration
+def test_concurrent_calls_from_many_threads_all_succeed(bridge: Bridge) -> None:
+    """Parallel calls must not fail.
+
+    MCPServer runs synchronous tool functions on anyio's worker thread pool,
+    so concurrent tool calls reach the shared ServerProxy from several
+    threads. Its single HTTPConnection raises CannotSendRequest or
+    ResponseNotReady instead of queueing, and every parallel call fails.
+    A purely sequential suite never sees this.
+    """
+    document = bridge.new_document("conc")["name"]
+
+    def add(i: int) -> str:
+        return bridge.add_primitive(
+            document, "Part::Box", f"B{i}", {"Length": 10.0}
+        )
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        names = [f.result() for f in [pool.submit(add, i) for i in range(8)]]
+
+    assert len(names) == 8
+    assert len(set(names)) == 8, "concurrent adds collided on object names"
+
+    def read() -> str:
+        return str(bridge.list_documents())
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        docs = [f.result() for f in [pool.submit(read) for _ in range(8)]]
+    assert all(document in d for d in docs)
 
 
 @pytest.mark.integration

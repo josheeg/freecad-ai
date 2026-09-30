@@ -53,6 +53,8 @@ itself launches instantly. It runs headless — no GUI instance is started.
 | `list_objects` | Objects in a document, with name, label and type |
 | `get_properties` / `set_property` | Read and write object properties |
 | `remove_object` | Remove an object |
+| `boolean_op` | cut, fuse or common two objects into a new feature |
+| `set_placement` | Move and rotate an object |
 | `shape_summary` | Volume, area and bounding box |
 | `export_object` | Write an object to `.step`, `.stl`, `.iges`, `.obj` or `.brep` |
 
@@ -91,14 +93,30 @@ uv run mypy
 ## Architecture
 
 ```
-bridge/freecad_bridge.py   runs under FreeCAD's bundled Python 3.11;
-                           the only file permitted to import FreeCAD
-src/freecad_ai/bridge.py   XML-RPC client and process launcher (3.14)
-src/freecad_ai/server.py   MCP server, 11 tools over stdio
+src/freecad_ai/_freecad_bridge.py  runs under FreeCAD's bundled Python 3.11;
+                                  the only file permitted to import FreeCAD,
+                                  launched by path and never imported
+src/freecad_ai/bridge.py           XML-RPC client and process launcher (3.14)
+src/freecad_ai/server.py           MCP server, 14 tools over stdio
 ```
 
-The FreeCAD-side script lives outside `src/` so the interpreter boundary is
-enforced by the package layout rather than by convention.
+The FreeCAD-side script lives inside the package so it ships in the wheel — an
+installed package has no project root to resolve a sibling directory against.
+It is still never imported by the server: tests assert that no package module
+references it, which is what keeps FreeCAD's 3.11-only modules out of the 3.14
+process.
+
+### Worked example
+
+```python
+new_document("bracket")
+add_primitive("bracket", "Part::Box", "Plate", {"Length": 40, "Width": 20, "Height": 4})
+add_primitive("bracket", "Part::Cylinder", "Hole", {"Radius": 2, "Height": 10})
+set_placement("bracket", "Hole", 10, 9, -3)
+boolean_op("bracket", "Plate", "Hole", "cut", "Drilled")
+shape_summary("bracket", "Drilled")   # volume 3149.73 (3200 plate − 50.27 hole)
+export_object("bracket", "Drilled", "C:/parts/bracket.step")
+```
 
 ## Security
 

@@ -8,7 +8,7 @@ MCP server that lets an AI assistant drive FreeCAD 1.1. Python, `uv`, packaged w
 ## Where things are
 
 - Entry point: `src/freecad_ai/`, exposed as the `freecad-ai` console script via `freecad_ai:main`
-- FreeCAD-side bridge lives in `bridge/freecad_bridge.py`, **outside** `src/` on purpose — it is the only file allowed to `import FreeCAD`, and keeping it out of the package makes the 3.11/3.14 boundary structural rather than a convention.
+- FreeCAD-side bridge is `src/freecad_ai/_freecad_bridge.py` — the only file allowed to `import FreeCAD`, and **never imported by the package**; it is launched by path as a script. It lives inside the package so it ships in the wheel (an installed package has no project root to resolve a sibling directory against), and tests enforce the never-imported rule.
 - Target FreeCAD is 1.1 only — `C:\Program Files\FreeCAD 1.1`. Do not write code against 1.0 APIs.
 
 ## Running and verifying
@@ -30,9 +30,12 @@ MCP server that lets an AI assistant drive FreeCAD 1.1. Python, `uv`, packaged w
 - FreeCAD's workbench loader does not run `Init.py` at startup, only `InitGui.py` module-level code. If bridge auto-start ever needs to live in this repo, that asymmetry governs where it goes.
 - Headless `freecadcmd` on 1.1 has **no** `QApplication` *or* `QCoreApplication` instance, and `FreeCADGui`/`PySide6` still import cleanly — branch on `FreeCAD.GuiUp` alone, never on import success or app-instance presence. Starting bridge work before `GuiUp` is `True` races the Qt event loop and crashes FreeCAD with `SIGABRT`.
 - FreeCAD is not on PyPI (verified: 404). Never add it as a dependency; it is an external process, not an import.
-- `freecadcmd script.py` **imports** the script under the module name taken from its filename, so `__name__` is never `"__main__"`. An `if __name__ == "__main__"` guard silently does nothing: the process starts, defines everything, and exits without binding the port. See `_running_under_freecadcmd()` in `bridge/freecad_bridge.py`.
+- `freecadcmd script.py` **imports** the script under the module name taken from its filename, so `__name__` is never `"__main__"`. An `if __name__ == "__main__"` guard silently does nothing: the process starts, defines everything, and exits without binding the port. See `_running_under_freecadcmd()` in `src/freecad_ai/_freecad_bridge.py`.
 - Under `freecadcmd`, `sys.argv[1]` is the **script path**, so user arguments start at index 2. Reading from index 1 treats the script's own path as the host and the host as the port.
 - FreeCAD dimensions are `Base.Quantity`, not `float`. An `isinstance` filter for `(int, float, str, bool)` drops every dimension silently; unwrap via `.Value` and `.getUserPreferred()`.
+- FreeCAD 1.1 has **no `Part::Boolean`**. Booleans are separate feature types — `Part::Cut`, `Part::Fuse`, `Part::Common` — each with `Base` and `Tool` links. `addObject("Part::Boolean", …)` raises `No document object found`.
+- A `Placement` is a FreeCAD object, not a primitive: passing a dict to `set_property` raises `type must be 'Matrix' or 'Placement', not dict`. Send components and reassemble — see `set_placement`.
+- `_freecad_bridge.py` runs under FreeCAD's bundled 3.11, so `mypy` excludes it (strict 3.14 checking does not describe it). `ruff` still lints it.
 - XML-RPC cannot marshal `None`, and marshalling a non-marshallable object (a function, say) returns an empty struct rather than raising. The dispatch function must *call* the target and forward `*args`.
 - **Never let a tool raise.** MCPServer 2.2 handles `except MCPError: raise` before its generic handler, and `ToolError` subclasses `MCPError`, so the `is_error=True` result path is unreachable for it. Return `{"error", "kind", "hint"}` instead — see `_tool` in `src/freecad_ai/server.py`.
 - A tool's **return annotation becomes an output schema** that every result is validated against. A tool annotated `-> list[dict]` rejects the dict error payload as a type mismatch and resurfaces as `UnexpectedToolError`. The `_tool` decorator therefore publishes `__signature__` with a widened return; do not remove it.
