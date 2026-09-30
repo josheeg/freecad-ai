@@ -12,6 +12,7 @@ import time
 import xmlrpc.client
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -135,6 +136,39 @@ def test_concurrent_calls_do_not_interleave() -> None:
 
     assert results == ["ok"] * 4
     assert max(overlap) == 1, "calls overlapped inside the bridge"
+
+
+def test_config_reads_host_and_port_from_env(monkeypatch: Any) -> None:
+    monkeypatch.delenv(bridge_module.ENV_HOST, raising=False)
+    monkeypatch.delenv(bridge_module.ENV_PORT, raising=False)
+    assert bridge_module.configured_host() == bridge_module.DEFAULT_HOST
+    assert bridge_module.configured_port() == bridge_module.DEFAULT_PORT
+
+    monkeypatch.setenv(bridge_module.ENV_HOST, "0.0.0.0")
+    monkeypatch.setenv(bridge_module.ENV_PORT, "12345")
+    assert bridge_module.configured_host() == "0.0.0.0"
+    assert bridge_module.configured_port() == 12345
+
+
+@pytest.mark.parametrize("bad", ["not-a-number", "", "0", "70000", "-1"])
+def test_config_rejects_bad_ports(monkeypatch: Any, bad: str) -> None:
+    monkeypatch.setenv(bridge_module.ENV_PORT, bad)
+    if bad == "":
+        assert bridge_module.configured_port() == bridge_module.DEFAULT_PORT
+        return
+    with pytest.raises(BridgeError, match=bridge_module.ENV_PORT):
+        bridge_module.configured_port()
+
+
+def test_bridge_uses_configured_port(monkeypatch: Any) -> None:
+    monkeypatch.setenv(bridge_module.ENV_PORT, "12345")
+    assert Bridge().port == 12345
+    assert "12345" in str(Bridge()._proxy)
+
+
+def test_explicit_arguments_beat_the_environment(monkeypatch: Any) -> None:
+    monkeypatch.setenv(bridge_module.ENV_PORT, "12345")
+    assert Bridge(port=9999).port == 9999
 
 
 def test_fault_codes_map_to_typed_errors() -> None:

@@ -19,8 +19,6 @@ from mcp.server.mcpserver import MCPServer
 
 from ._version import __version__
 from .bridge import (
-    DEFAULT_HOST,
-    DEFAULT_PORT,
     Bridge,
     BridgeError,
     start_headless,
@@ -56,11 +54,15 @@ server = MCPServer(
 _lock = threading.Lock()
 _process: subprocess.Popen[bytes] | None = None
 _bridge: Bridge | None = None
+# True when the previous FreeCAD process died and had to be replaced. Every
+# document went with it, and the model must be told rather than handed a
+# silently empty FreeCAD.
+_restarted = False
 
 
 def get_bridge() -> Bridge:
-    """Return a connected bridge, starting FreeCAD on first call."""
-    global _process, _bridge
+    """Return a connected bridge, starting or replacing FreeCAD as needed."""
+    global _process, _bridge, _restarted
     with _lock:
         if _bridge is not None:
             try:
@@ -68,8 +70,40 @@ def get_bridge() -> Bridge:
                     return _bridge
             except BridgeError:
                 _bridge = None
-        _process, _bridge = start_headless(DEFAULT_HOST, DEFAULT_PORT)
+        else:
+            _restarted = False
+
+        if _process is not None:
+            if _process.poll() is None:
+                # Alive but not answering: give it up cleanly before
+                # replacing it, or the port stays bound by a process we no
+                # longer own.
+                _process.terminate()
+                try:
+                    _process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    _process.kill()
+            _restarted = True
+
+        _process, _bridge = start_headless()
         return _bridge
+
+
+def consume_restart_notice() -> str | None:
+    """Return a one-shot notice if FreeCAD was replaced, else ``None``.
+
+    Read-and-clear, so a single restart is reported once rather than on every
+    subsequent call.
+    """
+    global _restarted
+    with _lock:
+        if not _restarted:
+            return None
+        _restarted = False
+    return (
+        "FreeCAD was not responding and has been restarted. Every document "
+        "and object from before is gone; re-create what you need."
+    )
 
 
 @atexit.register
@@ -108,7 +142,12 @@ def _tool(name: str, description: str) -> Callable[[Callable[P, R]], Callable[P,
             # tool can reintroduce that by passing a bridge value through.
             if isinstance(result, list):
                 return {"items": result}
-            return result
+            notice = consume_restart_notice()
+            if notice is None:
+                return result
+            if isinstance(result, dict):
+                return {**result, "notice": notice}
+            return {"result": result, "notice": notice}
 
         functools.update_wrapper(wrapper, func)
         # Publish the original signature, but with a widened return type.
@@ -165,7 +204,21 @@ def list_objects(document: str) -> dict[str, Any]:
     return {"objects": get_bridge().list_objects(document)}
 
 
-@_tool("add_primitive", "Add a Part primitive. kind is a FreeCAD TypeId.")
+@_tool(
+    "list_primitive_types",
+    "List the Part types this FreeCAD can create, with the properties each "
+    "one takes. Call this before add_primitive: TypeIds and dimension names "
+    "differ per shape and cannot be guessed.",
+)
+def list_primitive_types() -> dict[str, Any]:
+    return {"types": get_bridge().list_primitive_types()}
+
+
+@_tool(
+    "add_primitive",
+    "Add a Part primitive. kind is a FreeCAD TypeId such as Part::Box; call "
+    "list_primitive_types for the available types and their properties.",
+)
 def add_primitive(
     document: str,
     kind: str,

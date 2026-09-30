@@ -54,6 +54,26 @@ _BOOLEAN_TYPES = {
     "common": "Part::Common",
 }
 
+# Probed by list_primitive_types, not a hardcoded contract: this FreeCAD build
+# may not offer all of them (1.1.3 has no Part::Tube, for instance).
+_CANDIDATE_TYPES = (
+    "Part::Box",
+    "Part::Cylinder",
+    "Part::Sphere",
+    "Part::Cone",
+    "Part::Torus",
+    "Part::Prism",
+    "Part::Wedge",
+    "Part::Helix",
+    "Part::Tube",
+    "Part::Circle",
+    "Part::Ellipse",
+    "Part::Polygon",
+    "Part::Plane",
+    "Part::Line",
+    "Part::Vertex",
+)
+
 
 def _fail(code: int, message: str) -> None:
     raise Fault(code, message)
@@ -319,6 +339,58 @@ def boolean_op(
             "the two may not overlap",
         )
     return result.Name
+
+
+def _parametric_properties(obj: Any) -> list[str]:
+    """Named shape-affecting properties, so an agent knows what to pass.
+
+    Filtered from PropertiesList: a fresh primitive carries a lot of engine and
+    attachment properties that are not dimensions.
+    """
+    return [
+        prop
+        for prop in obj.PropertiesList
+        if not prop.startswith("_")
+        and prop
+        not in {
+            "Label",
+            "Label2",
+            "ExpressionEngine",
+            "Visibility",
+            "AttacherEngine",
+            "AttacherType",
+            "AttachmentOffset",
+            "AttachmentSupport",
+            "MapMode",
+            "MapReversed",
+            "MapPathParameter",
+            "Refine",
+            "History",
+        }
+    ]
+
+
+def list_primitive_types() -> list[dict[str, Any]]:
+    """Enumerate creatable Part types and the properties each one takes.
+
+    An agent cannot guess a FreeCAD TypeId, and the dimension names differ per
+    primitive (Box has Length/Width/Height, Cylinder has Radius/Height/Angle).
+    This is probed live rather than hardcoded, so it tracks whatever the
+    installed FreeCAD actually offers.
+    """
+    import FreeCAD
+
+    catalog: list[dict[str, Any]] = []
+    for kind in _CANDIDATE_TYPES:
+        probe = FreeCAD.newDocument("_probe", hidden=True)
+        try:
+            obj = probe.addObject(kind, "probe")
+            catalog.append({"type": kind, "properties": _parametric_properties(obj)})
+        except Exception:
+            continue
+        finally:
+            FreeCAD.closeDocument(probe.Name)
+    return catalog
 
 
 def get_properties(name: str, object_name: str) -> dict[str, Any]:

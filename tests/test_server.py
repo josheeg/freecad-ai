@@ -19,6 +19,38 @@ def registry() -> Any:
     return server_module.server._tool_manager
 
 
+def test_restart_notice_is_reported_once(monkeypatch: Any) -> None:
+    """A replaced FreeCAD must be announced, then not repeated.
+
+    Otherwise the model is handed an empty FreeCAD with no indication its
+    documents are gone, and it carries on building a silently wrong model.
+    """
+    monkeypatch.setattr(server_module, "_restarted", False)
+    assert server_module.consume_restart_notice() is None
+
+    monkeypatch.setattr(server_module, "_restarted", True)
+    notice = server_module.consume_restart_notice()
+    assert notice is not None
+    assert "restarted" in notice
+    assert "gone" in notice
+    # Read-and-clear: one restart is reported once, not on every later call.
+    assert server_module.consume_restart_notice() is None
+
+
+def test_restart_notice_reaches_the_tool_result(monkeypatch: Any) -> None:
+    from unittest.mock import MagicMock
+
+    fake = MagicMock()
+    fake.list_documents.return_value = ["a"]
+    monkeypatch.setattr(server_module, "get_bridge", lambda: fake)
+    monkeypatch.setattr(server_module, "_restarted", True)
+
+    tool = server_module.server._tool_manager.get_tool("list_documents")
+    result = tool.fn()
+    assert "notice" in result
+    assert result["documents"] == ["a"]
+
+
 def test_every_tool_is_registered(registry: Any) -> None:
     names = {tool.name for tool in registry._tools.values()}
     assert names == {
@@ -36,6 +68,7 @@ def test_every_tool_is_registered(registry: Any) -> None:
         "export_object",
         "boolean_op",
         "set_placement",
+        "list_primitive_types",
     }
 
 
@@ -94,6 +127,7 @@ def test_no_tool_returns_a_bare_list(registry: Any, monkeypatch: Any) -> None:
     fake = MagicMock()
     for name in (
         "version",
+        "list_primitive_types",
         "list_documents",
         "list_objects",
         "get_properties",

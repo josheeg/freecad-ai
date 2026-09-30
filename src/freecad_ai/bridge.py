@@ -230,6 +230,9 @@ class Bridge:
             str, self._call("add_primitive", name, kind, object_name, dimensions)
         )
 
+    def list_primitive_types(self) -> list[dict[str, Any]]:
+        return cast("list[dict[str, Any]]", self._call("list_primitive_types"))
+
     def get_properties(self, name: str, object_name: str) -> dict[str, Any]:
         return cast("dict[str, Any]", self._call("get_properties", name, object_name))
 
@@ -287,28 +290,29 @@ class Bridge:
 
 
 def wait_until_ready(
-    host: str = DEFAULT_HOST,
-    port: int = DEFAULT_PORT,
+    host: str | None = None,
+    port: int | None = None,
     timeout: float = 30.0,
 ) -> Bridge:
     """Block until the bridge answers, or raise once ``timeout`` elapses.
 
     FreeCAD needs several seconds to initialise before it binds the port, so
-    callers should use this rather than a bare sleep.
+    callers should use this rather than a bare sleep. One Bridge is built
+    outside the loop: constructing it per attempt would open and abandon a
+    connection on every poll.
     """
+    bridge = Bridge(host, port)
     deadline = time.monotonic() + timeout
     last: Exception | None = None
     while time.monotonic() < deadline:
-        bridge = Bridge(host, port)
         try:
             if bridge.ping() == "pong":
                 return bridge
         except BridgeError as error:
             last = error
-            time.sleep(0.25)
         else:
             last = BridgeError("bridge answered ping with an unexpected value")
-            time.sleep(0.25)
+        time.sleep(0.25)
     raise BridgeError(f"bridge did not become ready within {timeout}s: {last}")
 
 
@@ -321,8 +325,8 @@ def freecadcmd_path() -> Path:
 
 
 def start_headless(
-    host: str = DEFAULT_HOST,
-    port: int = DEFAULT_PORT,
+    host: str | None = None,
+    port: int | None = None,
     timeout: float = 30.0,
 ) -> tuple[subprocess.Popen[bytes], Bridge]:
     """Launch ``freecadcmd`` with the bridge and return the process and client.
@@ -334,12 +338,20 @@ def start_headless(
     if not BRIDGE_SCRIPT.is_file():
         raise BridgeError(f"bridge script missing at {BRIDGE_SCRIPT}")
 
+    resolved_host = host if host is not None else configured_host()
+    resolved_port = port if port is not None else configured_port()
+
     creationflags = 0
     if os.name == "nt":
         creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
     process = subprocess.Popen(
-        [str(freecadcmd_path()), str(BRIDGE_SCRIPT), host, str(port)],
+        [
+            str(freecadcmd_path()),
+            str(BRIDGE_SCRIPT),
+            resolved_host,
+            str(resolved_port),
+        ],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         creationflags=creationflags,

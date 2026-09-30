@@ -258,6 +258,61 @@ def test_concurrent_calls_from_many_threads_all_succeed(bridge: Bridge) -> None:
 
 
 @pytest.mark.integration
+def test_open_document_round_trips_through_disk(bridge: Bridge, tmp_path: Path) -> None:
+    """The one bridge function that had no behavioural coverage at all."""
+    source = bridge.new_document("to_save")["name"]
+    bridge.add_primitive(
+        source, "Part::Box", "Saved", {"Length": 5.0, "Width": 5.0, "Height": 5.0}
+    )
+    target = tmp_path / "stored.FCStd"
+    bridge.save_document(source, str(target))
+    assert target.is_file()
+
+    # A fresh FreeCAD process cannot see the in-memory document, so opening
+    # the saved file is the only way to prove it reached disk.
+    process, other = start_headless(HOST, PORT + 2, timeout=60.0)
+    try:
+        assert source not in other.list_documents()
+        opened = other.open_document(str(target))
+        objects = other.list_objects(opened)
+        assert any(obj["name"] == "Saved" for obj in objects)
+        volume = other.shape_summary(opened, "Saved")["volume"]
+        assert volume == pytest.approx(125.0, abs=0.01)
+    finally:
+        stop(process)
+
+
+@pytest.mark.integration
+def test_open_missing_file_raises(bridge: Bridge, tmp_path: Path) -> None:
+    with pytest.raises(BridgeError):
+        bridge.open_document(str(tmp_path / "nope.FCStd"))
+
+
+@pytest.mark.integration
+def test_list_primitive_types_reports_real_properties(bridge: Bridge) -> None:
+    types = bridge.list_primitive_types()
+    by_type = {entry["type"]: entry["properties"] for entry in types}
+    assert "Part::Box" in by_type
+    assert {"Length", "Width", "Height"} <= set(by_type["Part::Box"])
+    assert "Part::Cylinder" in by_type
+    assert "Radius" in by_type["Part::Cylinder"]
+    # Probed, not hardcoded: a type this build lacks must be absent, not
+    # reported and then rejected.
+    for entry in types:
+        assert entry["properties"], f"{entry['type']} reported no properties"
+    assert "Part::Tube" not in by_type, "1.1.3 has no Part::Tube"
+
+
+@pytest.mark.integration
+def test_primitive_catalogue_matches_what_can_be_added(bridge: Bridge) -> None:
+    """Every advertised type must actually be creatable."""
+    for index, entry in enumerate(bridge.list_primitive_types()):
+        document = bridge.new_document(f"cat{index}")["name"]
+        name = f"T{index}"
+        assert bridge.add_primitive(document, entry["type"], name, {}) == name
+
+
+@pytest.mark.integration
 def test_new_document_is_idempotent(bridge: Bridge) -> None:
     first = bridge.new_document("idem")
     assert first["created"] is True
