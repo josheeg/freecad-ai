@@ -34,5 +34,8 @@ MCP server that lets an AI assistant drive FreeCAD 1.1. Python, `uv`, packaged w
 - Under `freecadcmd`, `sys.argv[1]` is the **script path**, so user arguments start at index 2. Reading from index 1 treats the script's own path as the host and the host as the port.
 - FreeCAD dimensions are `Base.Quantity`, not `float`. An `isinstance` filter for `(int, float, str, bool)` drops every dimension silently; unwrap via `.Value` and `.getUserPreferred()`.
 - XML-RPC cannot marshal `None`, and marshalling a non-marshallable object (a function, say) returns an empty struct rather than raising. The dispatch function must *call* the target and forward `*args`.
+- **Never let a tool raise.** MCPServer 2.2 handles `except MCPError: raise` before its generic handler, and `ToolError` subclasses `MCPError`, so the `is_error=True` result path is unreachable for it. Return `{"error", "kind", "hint"}` instead — see `_tool` in `src/freecad_ai/server.py`.
+- A tool's **return annotation becomes an output schema** that every result is validated against. A tool annotated `-> list[dict]` rejects the dict error payload as a type mismatch and resurfaces as `UnexpectedToolError`. The `_tool` decorator therefore publishes `__signature__` with a widened return; do not remove it.
+- `xmlrpc.client` serialises any uncaught bridge exception as `faultCode 1`, so the bridge's own codes start at 100. Mapping 1 to a named condition misreports ordinary `TypeError`s.
 
 <!-- /bmad:context -->

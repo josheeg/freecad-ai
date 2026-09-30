@@ -46,17 +46,35 @@ itself launches instantly. It runs headless — no GUI instance is started.
 | Tool | Purpose |
 | --- | --- |
 | `connect` | Start FreeCAD if needed and report its version |
-| `new_document` / `open_document` / `save_document` | Document lifecycle |
+| `new_document` | Create a document, or return the existing one (`reuse=False` to insist) |
+| `open_document` / `save_document` | Document lifecycle |
 | `list_documents` | List open documents |
 | `add_primitive` | Add a Part primitive (`Part::Box`, `Part::Cylinder`, …) |
 | `list_objects` | Objects in a document, with name, label and type |
 | `get_properties` / `set_property` | Read and write object properties |
 | `remove_object` | Remove an object |
 | `shape_summary` | Volume, area and bounding box |
+| `export_object` | Write an object to `.step`, `.stl`, `.iges`, `.obj` or `.brep` |
 
 Dimensional properties are reported as `{"value": 10.0, "unit": "mm"}` rather
 than bare numbers, and a value read back with `get_properties` can be passed
 straight to `set_property`.
+
+### Errors
+
+A failing tool returns a result carrying the failure rather than crashing:
+
+```json
+{
+  "error": "no such document: ghost",
+  "kind": "DocumentNotFound",
+  "hint": "Call `new_document` with that name first."
+}
+```
+
+`kind` is a stable class name and `hint` says what to do next, so an agent can
+recover instead of guessing. Most failures are a missing document, object or
+property — not a broken server.
 
 ## Development
 

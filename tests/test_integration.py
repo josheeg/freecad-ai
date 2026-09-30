@@ -9,10 +9,12 @@ from __future__ import annotations
 import subprocess
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from freecad_ai.bridge import (
+    BadOperation,
     Bridge,
     BridgeError,
     DocumentExists,
@@ -110,6 +112,77 @@ def test_remove_object(bridge: Bridge, document: str) -> None:
     assert not any(obj["name"] == "Doomed" for obj in bridge.list_objects(document))
 
 
+@pytest.fixture
+def drilled(bridge: Bridge) -> str:
+    """A 10x10x10 box with a 2mm-radius hole through the Z axis.
+
+    Expected volumes, from the FreeCAD 1.1 solver: box 1000, cylinder through
+    the full height pi*2^2*10 = 125.664.
+    """
+    document = bridge.new_document("drilled")["name"]
+    bridge.add_primitive(
+        document, "Part::Box", "Plate", {"Length": 10.0, "Width": 10.0, "Height": 10.0}
+    )
+    bridge.add_primitive(
+        document,
+        "Part::Cylinder",
+        "Bit",
+        {"Radius": 2.0, "Height": 20.0, "Angle": 360.0},
+    )
+    # Centre the 20mm bit on the 10mm plate so it passes right through.
+    bridge.set_placement(document, "Bit", 4.0, 4.0, -5.0)
+    return document
+
+
+@pytest.mark.integration
+def test_boolean_cut_removes_material(bridge: Bridge, drilled: str) -> None:
+    bridge.boolean_op(drilled, "Plate", "Bit", "cut", "Hole")
+    summary = bridge.shape_summary(drilled, "Hole")
+    assert summary["volume"] == pytest.approx(1000.0 - 125.664, abs=0.01)
+
+
+@pytest.mark.integration
+def test_boolean_fuse_adds_material(bridge: Bridge, drilled: str) -> None:
+    bridge.boolean_op(drilled, "Plate", "Bit", "common", "Overlap")
+    common = bridge.shape_summary(drilled, "Overlap")["volume"]
+    assert common == pytest.approx(125.664, abs=0.01)
+
+    bridge.boolean_op(drilled, "Plate", "Bit", "fuse", "Welded")
+    assert bridge.shape_summary(drilled, "Welded")["volume"] == pytest.approx(
+        1125.664, abs=0.01
+    )
+
+
+@pytest.mark.integration
+def test_boolean_keeps_its_inputs(bridge: Bridge, drilled: str) -> None:
+    bridge.boolean_op(drilled, "Plate", "Bit", "cut", "Kept")
+    names = {obj["name"] for obj in bridge.list_objects(drilled)}
+    assert {"Plate", "Bit", "Kept"} <= names
+    assert bridge.shape_summary(drilled, "Plate")["volume"] == pytest.approx(1000.0)
+
+
+@pytest.mark.integration
+def test_boolean_rejects_unknown_operation(bridge: Bridge, drilled: str) -> None:
+    with pytest.raises(BadOperation, match="unsupported boolean operation"):
+        bridge.boolean_op(drilled, "Plate", "Bit", "xor", "Bad")
+
+
+@pytest.mark.integration
+def test_boolean_rejects_identical_inputs(bridge: Bridge, drilled: str) -> None:
+    with pytest.raises(BadOperation, match="must be different"):
+        bridge.boolean_op(drilled, "Plate", "Plate", "cut", "Bad")
+
+
+@pytest.mark.integration
+def test_boolean_result_is_exportable(
+    bridge: Bridge, drilled: str, tmp_path: Path
+) -> None:
+    bridge.boolean_op(drilled, "Plate", "Bit", "cut", "Exportable")
+    target = tmp_path / "drilled.step"
+    bridge.export_object(drilled, "Exportable", str(target))
+    assert target.stat().st_size > 0
+
+
 @pytest.mark.integration
 def test_new_document_is_idempotent(bridge: Bridge) -> None:
     first = bridge.new_document("idem")
@@ -154,6 +227,17 @@ def test_export_rejects_unsupported_format(bridge: Bridge, tmp_path: Path) -> No
     bridge.add_primitive(document, "Part::Box", "Part", {"Length": 1.0})
     with pytest.raises(ExportFailed, match="unsupported export format"):
         bridge.export_object(document, "Part", str(tmp_path / "part.xyz"))
+
+
+@pytest.mark.integration
+def test_export_reports_missing_directory_as_user_error(
+    bridge: Bridge, tmp_path: Path
+) -> None:
+    """A missing directory is the caller's mistake, not a server bug."""
+    document = bridge.new_document("nodir")["name"]
+    bridge.add_primitive(document, "Part::Box", "Part", {"Length": 1.0})
+    with pytest.raises(ExportFailed, match="directory does not exist"):
+        bridge.export_object(document, "Part", str(tmp_path / "absent" / "part.step"))
 
 
 @pytest.mark.integration

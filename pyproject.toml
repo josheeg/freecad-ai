@@ -50,6 +50,10 @@ select = ["E", "W", "F", "I", "B", "UP", "SIM", "RUF"]
 python_version = "3.14"
 files = ["src"]
 strict = true
+# _freecad_bridge.py runs under FreeCAD's bundled Python 3.11, never under this
+# project's 3.14, so strict 3.14 checking does not describe it. It is launched
+# by path rather than imported, and ruff still lints it.
+exclude = ['^src/freecad_ai/_freecad_bridge\.py$']
 warn_unreachable = true
 
 [tool.pytest.ini_options]

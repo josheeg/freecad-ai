@@ -6,6 +6,7 @@ These never start FreeCAD. End-to-end coverage lives in
 
 from __future__ import annotations
 
+import re
 import subprocess
 import xmlrpc.client
 from pathlib import Path
@@ -16,6 +17,7 @@ from freecad_ai import bridge as bridge_module
 from freecad_ai.bridge import (
     BRIDGE_SCRIPT,
     FREECAD_1_1_BIN,
+    BadOperation,
     Bridge,
     BridgeError,
     BridgeInternalError,
@@ -114,6 +116,7 @@ def test_fault_codes_map_to_typed_errors() -> None:
         106: NoSuchDimension,
         107: ExportFailed,
         108: SaveFailed,
+        109: BadOperation,
     }
     for code, expected in cases.items():
         bridge = make_bridge(FakeProxy(raises=xmlrpc.client.Fault(code, "boom")))
@@ -161,22 +164,69 @@ def test_wait_until_ready_rejects_unexpected_ping() -> None:
         bridge_module.Bridge = original  # type: ignore[misc]
 
 
-def test_bridge_script_lives_outside_the_server_package() -> None:
-    """The FreeCAD-side module must never be importable by server code.
+def test_bridge_script_ships_inside_the_package() -> None:
+    """The FreeCAD-side script must ship in the wheel.
 
-    It is the only place allowed to ``import FreeCAD``; keeping it out of
-    ``src/`` makes the 3.11/3.14 boundary structural.
+    An installed package has no project root, so a script resolved relative to
+    one cannot be found. Sibling-of-module is the only layout that works both
+    in the source tree and in site-packages.
     """
     assert BRIDGE_SCRIPT.is_file()
-    assert Path(*BRIDGE_SCRIPT.parts[-2:]) == Path("bridge", "freecad_bridge.py")
-    assert "src" not in BRIDGE_SCRIPT.parts
+    assert BRIDGE_SCRIPT.parent == Path(bridge_module.__file__).resolve().parent
+    assert BRIDGE_SCRIPT.name == "_freecad_bridge.py"
 
 
-def test_server_package_never_imports_freecad() -> None:
-    source = (Path(__file__).resolve().parents[1] / "src" / "freecad_ai").rglob("*.py")
-    for path in source:
-        text = path.read_text(encoding="utf-8")
-        assert "import FreeCAD" not in text, f"{path} imports FreeCAD in-process"
+def test_no_package_module_imports_the_bridge_script() -> None:
+    """`_freecad_bridge` is launched by path, never imported.
+
+    That is what keeps `import FreeCAD` confined to one file: importing it
+    into the server process would pull FreeCAD's 3.11-only modules into 3.14.
+    """
+    package = Path(bridge_module.__file__).resolve().parent
+    pattern = re.compile(
+        r"^\s*(?:from\s+freecad_ai\._freecad_bridge\s+import|"
+        r"from\s+\._freecad_bridge\s+import|"
+        r"import\s+freecad_ai\._freecad_bridge|"
+        r"import\s+\._freecad_bridge)",
+        re.MULTILINE,
+    )
+    offenders = [
+        path.name
+        for path in package.glob("*.py")
+        if path.name != "_freecad_bridge.py"
+        and pattern.search(path.read_text(encoding="utf-8"))
+    ]
+    assert offenders == [], f"these import the bridge script: {offenders}"
+
+
+def test_only_the_bridge_script_imports_freecad() -> None:
+    package = Path(bridge_module.__file__).resolve().parent
+    offenders = [
+        path.name
+        for path in package.glob("*.py")
+        if path.name != "_freecad_bridge.py"
+        and "import FreeCAD" in path.read_text(encoding="utf-8")
+    ]
+    assert offenders == [], f"these import FreeCAD in-process: {offenders}"
+
+
+def test_bridge_script_imports_freecad_only_inside_functions() -> None:
+    """Module-level `import FreeCAD` would break the script's own import.
+
+    freecadcmd imports the script, so a top-level FreeCAD import would run at
+    import time — which is fine there, but the file must also stay parseable
+    and importable by 3.14 tooling.
+    """
+    text = BRIDGE_SCRIPT.read_text(encoding="utf-8")
+    body = text.split('if __name__ == "__main__"', 1)[0]
+    for line in body.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("import FreeCAD") or stripped.startswith(
+            "from FreeCAD"
+        ):
+            assert line.startswith((" ", "\t")), (
+                "module-level FreeCAD import in the bridge script"
+            )
 
 
 def test_freecadcmd_path_targets_1_1() -> None:

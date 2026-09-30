@@ -17,11 +17,15 @@ from typing import Any, cast
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 9875
 
-# FreeCADCmd is not on PATH; both 1.0 and 1.1 are installed side by side, so an
+# freecadcmd is not on PATH; both 1.0 and 1.1 are installed side by side, so an
 # unqualified path silently binds the wrong one.
 FREECAD_1_1_BIN = Path(r"C:\Program Files\FreeCAD 1.1\bin")
 
-BRIDGE_SCRIPT = Path(__file__).resolve().parents[2] / "bridge" / "freecad_bridge.py"
+# The FreeCAD-side script lives inside the package so it ships in the wheel.
+# It must stay a sibling of this module rather than a path relative to the
+# project root: an installed wheel has no project root, and deriving one from
+# __file__ resolves to site-packages' parent, which contains no script.
+BRIDGE_SCRIPT = Path(__file__).resolve().parent / "_freecad_bridge.py"
 
 
 class BridgeError(RuntimeError):
@@ -64,11 +68,18 @@ class NoSuchDimension(BridgeError):
 
 
 class ExportFailed(BridgeError):
-    hint = "Use a supported extension, for example .step or .stl."
+    hint = (
+        "Check the path's directory exists and the extension is supported, "
+        "for example .step or .stl."
+    )
 
 
 class SaveFailed(BridgeError):
     hint = "Check the path is writable and the file is not locked."
+
+
+class BadOperation(BridgeError):
+    hint = "Operation must be cut, fuse or common, and the two objects must differ."
 
 
 class BridgeInternalError(BridgeError):
@@ -100,6 +111,7 @@ _FAULT_MAP: dict[int, type[BridgeError]] = {
     106: NoSuchDimension,
     107: ExportFailed,
     108: SaveFailed,
+    109: BadOperation,
 }
 
 
@@ -175,6 +187,49 @@ class Bridge:
 
     def remove_object(self, name: str, object_name: str) -> str:
         return cast(str, self._call("remove_object", name, object_name))
+
+    def set_placement(
+        self,
+        name: str,
+        object_name: str,
+        x: float,
+        y: float,
+        z: float,
+        axis_x: float = 0.0,
+        axis_y: float = 0.0,
+        axis_z: float = 1.0,
+        angle: float = 0.0,
+    ) -> dict[str, Any]:
+        return cast(
+            "dict[str, Any]",
+            self._call(
+                "set_placement",
+                name,
+                object_name,
+                float(x),
+                float(y),
+                float(z),
+                float(axis_x),
+                float(axis_y),
+                float(axis_z),
+                float(angle),
+            ),
+        )
+
+    def boolean_op(
+        self,
+        name: str,
+        base_name: str,
+        tool_name: str,
+        operation: str,
+        result_name: str,
+    ) -> str:
+        return cast(
+            str,
+            self._call(
+                "boolean_op", name, base_name, tool_name, operation, result_name
+            ),
+        )
 
     def shape_summary(self, name: str, object_name: str) -> dict[str, Any]:
         return cast("dict[str, Any]", self._call("shape_summary", name, object_name))

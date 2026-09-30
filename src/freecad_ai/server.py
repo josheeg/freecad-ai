@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import atexit
 import functools
+import inspect
 import subprocess
 import threading
 from collections.abc import Callable
@@ -103,6 +104,16 @@ def _tool(name: str, description: str) -> Callable[[Callable[P, R]], Callable[P,
                 }
 
         functools.update_wrapper(wrapper, func)
+        # Publish the original signature, but with a widened return type.
+        # MCPServer builds the input schema from the parameters and an output
+        # schema from the return, then validates every result against it — so
+        # a tool annotated `-> list[...]` would reject the dict error payload
+        # below as a type mismatch and surface as an opaque UnexpectedToolError.
+        # `__signature__` must be set explicitly because inspect.signature
+        # follows the `__wrapped__` that update_wrapper just installed.
+        wrapper.__signature__ = inspect.signature(func).replace(  # type: ignore[attr-defined]
+            return_annotation=Any
+        )
         server.tool(name=name, description=description)(wrapper)
         return cast("Callable[P, R]", wrapper)
 
@@ -166,6 +177,44 @@ def set_property(document: str, object_name: str, prop: str, value: Any) -> str:
 @_tool("remove_object", "Remove an object from a document.")
 def remove_object(document: str, object_name: str) -> str:
     return get_bridge().remove_object(document, object_name)
+
+
+@_tool(
+    "set_placement",
+    "Move and rotate an object. Placement is a FreeCAD object that cannot "
+    "cross the bridge directly, so send its components.",
+)
+def set_placement(
+    document: str,
+    object_name: str,
+    x: float,
+    y: float,
+    z: float,
+    axis_x: float = 0.0,
+    axis_y: float = 0.0,
+    axis_z: float = 1.0,
+    angle: float = 0.0,
+) -> dict[str, Any]:
+    return get_bridge().set_placement(
+        document, object_name, x, y, z, axis_x, axis_y, axis_z, angle
+    )
+
+
+@_tool(
+    "boolean_op",
+    "Combine two objects into a new one. operation is cut, fuse or common. "
+    "Both inputs are kept; the result is a new parametric feature.",
+)
+def boolean_op(
+    document: str,
+    base_name: str,
+    tool_name: str,
+    operation: str,
+    result_name: str,
+) -> str:
+    return get_bridge().boolean_op(
+        document, base_name, tool_name, operation, result_name
+    )
 
 
 @_tool(
