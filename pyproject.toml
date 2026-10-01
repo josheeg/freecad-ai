@@ -14,6 +14,18 @@ dependencies = [
 [project.scripts]
 freecad-ai = "freecad_ai:main"
 
+[tool.uv.build-backend]
+# The sdist is what someone installs from to build the frozen executable, and
+# the wheel is not. Without the spec here, an sdist user has no way to produce
+# the .exe at all - found by scripts/release.py, which asserts the archives
+# rather than trusting the source tree.
+source-include = [
+    "packaging/*.spec",
+    "CHANGELOG.md",
+    "justfile",
+    "scripts/verify_freeze.py",
+]
+
 [build-system]
 requires = ["uv_build>=0.12.12,<0.13.0"]
 build-backend = "uv_build"
@@ -21,6 +33,10 @@ build-backend = "uv_build"
 [dependency-groups]
 dev = [
     "mypy>=2.3.1",
+    # Parses .github/workflows/ci.yaml in test_packaging, so the workflow is
+    # checked as the structure it is rather than by matching its text. A
+    # grep-based check passes on a job that has been renamed or commented out.
+    "pyyaml>=6.0",
     "pytest>=9.1.1",
     "pytest-timeout>=2.4.0",
     "ruff>=0.16.9",

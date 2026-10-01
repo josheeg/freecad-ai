@@ -25,6 +25,7 @@ from typing import Any
 
 import pytest
 
+from freecad_ai import __version__
 from freecad_ai import server as server_module
 from freecad_ai.bridge import stop
 
@@ -236,7 +237,7 @@ def test_real_stdio_handshake(stdio_client: _StdioClient) -> None:
     assert response["id"] == 1
     result = response["result"]
     assert result["serverInfo"]["name"] == "freecad-ai"
-    assert result["serverInfo"]["version"] == "0.1.0"
+    assert result["serverInfo"]["version"] == __version__
     assert "instructions" in result
 
     stdio_client.send({"jsonrpc": "2.0", "method": "notifications/initialized"})

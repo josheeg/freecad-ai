@@ -916,13 +916,27 @@ def _sketch(document: str, object_name: str) -> Any:
 
 
 def _number(value: Any, what: str) -> float:
-    """Coerce a caller-supplied dimension, refusing bools and non-numbers.
+    """Coerce a caller-supplied dimension, refusing bools, non-numbers and NaN.
 
     A bool is an int in Python, so `add_sketch_circle(..., radius=True)` would
     otherwise silently become a 1mm circle.
+
+    Non-finite values are refused because they are not merely wrong, they are
+    fatal: a NaN passes every comparison-based guard in this file, because
+    `nan == 0`, `nan < 0` and `nan <= 0` are all False. Verified against
+    FreeCAD 1.1.3: `Part::Extrusion` with `LengthFwd = nan` *terminates the
+    interpreter* rather than raising, taking every open document with it. That
+    is AD-25, and this function is one of the two places it has to be enforced.
     """
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         _fail(FAULT_BAD_GEOMETRY, f"{what} must be a number, got {value!r}")
+        return 0.0
+    if value != value or value in (float("inf"), float("-inf")):
+        _fail(
+            FAULT_BAD_GEOMETRY,
+            f"{what} must be a finite number, got {value!r}. FreeCAD does not "
+            f"reject NaN or infinity - it terminates - so this is refused here.",
+        )
         return 0.0
     return float(value)
 
@@ -945,10 +959,18 @@ def _profile_wire(sketch: Any) -> Any:
     if not wires:
         _fail(FAULT_PROFILE_NOT_CLOSED, f"{sketch.Name} produced no wire")
     if len(wires) > 1:
+        # Say what it actually is. A profile with an inner boundary - the
+        # obvious way to draw a plate with holes - arrives here as several
+        # wires, and telling the caller their outline is malformed is both
+        # wrong and unhelpful: the region is connected, only the outline is
+        # not. The way out is already in the tool surface, so name it.
         _fail(
             FAULT_BAD_GEOMETRY,
-            f"{sketch.Name} has {len(wires)} separate wires; a profile must be "
-            f"a single connected outline",
+            f"{sketch.Name} has {len(wires)} separate wires, so it has an "
+            f"interior boundary - a profile with holes. This surface extrudes "
+            f"a single outer outline only. Cut the holes afterwards: "
+            f"extrude_sketch the outline, add each hole as a primitive, then "
+            f"boolean_op to cut them.",
         )
     wire = wires[0]
     if not wire.isClosed():
@@ -1000,20 +1022,30 @@ def add_sketch_line(
     y1: float,
     x2: float,
     y2: float,
+    name: Any = None,
 ) -> dict[str, Any]:
-    """Add a line segment between two points in the sketch plane."""
+    """Add a line segment between two points in the sketch plane.
+
+    ``name`` is optional and gives the geometry a stable reference that
+    survives an edit elsewhere in the sketch, which an index does not.
+    """
     import FreeCAD
     import Part
 
     doc = _require(document)
     sketch = _sketch(document, sketch_name)
+    # Validated before creation: after it there is no rollback, and a rejected
+    # name would leave an unnamed piece of geometry the caller cannot refer to.
+    _check_name(sketch, name, "line")
     start = FreeCAD.Vector(_number(x1, "x1"), _number(y1, "y1"), 0.0)
     end = FreeCAD.Vector(_number(x2, "x2"), _number(y2, "y2"), 0.0)
     if start.distanceToPoint(end) < 1e-9:
         _fail(FAULT_BAD_GEOMETRY, "a line needs two distinct points")
     sketch.addGeometry(Part.LineSegment(start, end), False)
     doc.recompute()
-    return {"geometry_count": sketch.GeometryCount, "index": sketch.GeometryCount}
+    index = sketch.GeometryCount
+    _add_name(sketch, index, name)
+    return {"geometry_count": index, "index": index}
 
 
 def add_sketch_arc(
@@ -1024,8 +1056,11 @@ def add_sketch_arc(
     radius: float,
     start_angle: float,
     end_angle: float,
+    name: Any = None,
 ) -> dict[str, Any]:
     """Add an arc of a circle, in degrees, counter-clockwise from +X.
+
+    ``name`` optionally gives the arc a reference that survives an edit.
 
     Angles are degrees to match the placement convention AD-19 fixed. A
     mis-spanned arc is the usual way a profile fails to close, which
@@ -1039,6 +1074,7 @@ def add_sketch_arc(
 
     doc = _require(document)
     sketch = _sketch(document, sketch_name)
+    _check_name(sketch, name, "arc")
     r = _number(radius, "radius")
     if r <= 0:
         _fail(FAULT_BAD_GEOMETRY, f"radius must be positive, got {r}")
@@ -1054,7 +1090,9 @@ def add_sketch_arc(
     circle = Part.Circle(centre, FreeCAD.Vector(0, 0, 1), r)
     sketch.addGeometry(Part.ArcOfCircle(circle, start_rad, end_rad), False)
     doc.recompute()
-    return {"geometry_count": sketch.GeometryCount, "index": sketch.GeometryCount}
+    index = sketch.GeometryCount
+    _add_name(sketch, index, name)
+    return {"geometry_count": index, "index": index}
 
 
 def add_sketch_circle(
@@ -1063,56 +1101,268 @@ def add_sketch_circle(
     cx: float,
     cy: float,
     radius: float,
+    name: Any = None,
 ) -> dict[str, Any]:
-    """Add a full circle, in the sketch plane."""
+    """Add a full circle, in the sketch plane.
+
+    ``name`` optionally gives the circle a reference that survives an edit.
+    """
     import FreeCAD
     import Part
 
     doc = _require(document)
     sketch = _sketch(document, sketch_name)
+    _check_name(sketch, name, "circle")
     r = _number(radius, "radius")
     if r <= 0:
         _fail(FAULT_BAD_GEOMETRY, f"radius must be positive, got {r}")
     centre = FreeCAD.Vector(_number(cx, "cx"), _number(cy, "cy"), 0.0)
     sketch.addGeometry(Part.Circle(centre, FreeCAD.Vector(0, 0, 1), r), False)
     doc.recompute()
-    return {"geometry_count": sketch.GeometryCount, "index": sketch.GeometryCount}
+    index = sketch.GeometryCount
+    _add_name(sketch, index, name)
+    return {"geometry_count": index, "index": index}
+
+
+# Caller-chosen names for sketch geometry, stored on the sketch itself.
+#
+# A name exists because an index does not survive an edit. Removing geometry
+# renumbers everything after it, so an index a caller is holding silently comes
+# to mean a different piece of geometry - the silent-wrong-result class reached
+# through an API shape rather than a FreeCAD quirk. Probed against 1.1.3:
+# deleting geometry 0 of two leaves count 1, and the surviving element moves
+# from index 1 to index 0.
+#
+# The mapping lives on the sketch as a dynamic property rather than in the
+# server, so a saved FCStd carries the names with it. It is a string because
+# XML-RPC cannot marshal a dict into a FreeCAD property, and it must be
+# reindexed by us on every removal - FreeCAD renumbers the geometry but knows
+# nothing about the names.
+_NAME_PROPERTY = "fc_geometry_names"
+_NAME_GROUP = "FreeCAD-AI"
+
+
+def _names(sketch: Any) -> dict[int, str]:
+    """The sketch's name mapping, geometry-index to name."""
+    import json
+
+    raw = getattr(sketch, _NAME_PROPERTY, "")
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+    except (ValueError, TypeError):
+        # A property the user edited by hand. Losing the names is recoverable;
+        # refusing to work is not.
+        return {}
+    out: dict[int, str] = {}
+    if isinstance(data, dict):
+        for key, value in data.items():
+            try:
+                out[int(key)] = str(value)
+            except (TypeError, ValueError):
+                continue
+    return out
+
+
+def _write_names(sketch: Any, mapping: dict[int, str]) -> None:
+    import json
+
+    if _NAME_PROPERTY not in sketch.PropertiesList:
+        sketch.addProperty(
+            "App::PropertyString",
+            _NAME_PROPERTY,
+            _NAME_GROUP,
+            "Names given to sketch geometry by freecad-ai, as {index: name}",
+        )
+    # Plain attribute assignment, which is the one form verified to work on a
+    # dynamically added property. There is no `_set_property` on a
+    # DocumentObject, and setPropertyStatus alone does not mark the document
+    # dirty, so the name would be lost on a save the caller never asked for.
+    setattr(sketch, _NAME_PROPERTY, json.dumps(mapping, sort_keys=True))
+    sketch.touch()
+
+
+def _add_name(sketch: Any, index: int, name: Any) -> None:
+    """Record a name for geometry that has already been added.
+
+    Called after the geometry is in place, because the index is only known
+    then. That ordering means a rejected name would leave the geometry behind -
+    so every rule about the name is checked beforehand by ``_check_name``, and
+    there is deliberately no validation here to fail.
+    """
+    if not name:
+        return
+    mapping = _names(sketch)
+    mapping[index] = name
+    _write_names(sketch, mapping)
+
+
+def _check_name(sketch: Any, name: Any, what: str, existing: Any = None) -> None:
+    """Validate a caller-supplied name before anything is created.
+
+    Everything checkable about a name is checked here, before creation, so
+    that recording it afterwards cannot fail and orphan the object AD-26 is
+    about. ``_add_name`` then does no validation at all.
+
+    ``existing`` supplies the names already in use for a kind of object that is
+    not geometry - a constraint, whose names FreeCAD keeps and this surface does
+    not. Geometry names come from the sketch instead.
+    """
+    # An empty string is how the wire says "no name" - XML-RPC cannot marshal
+    # None here - so it means absent rather than invalid. Whitespace-only is
+    # still refused, because unlike "" it looks like a name that was meant to
+    # be something.
+    if not name:
+        return
+    if not isinstance(name, str) or not name.strip():
+        _fail(
+            FAULT_BAD_GEOMETRY,
+            f"{what} name must be a non-empty string, got {name!r}",
+        )
+    if name != name.strip():
+        _fail(
+            FAULT_BAD_GEOMETRY,
+            f"{what} name {name!r} has leading or trailing whitespace, which "
+            f"would make it impossible to pass back as a reference",
+        )
+    if existing is not None:
+        if name in existing:
+            _fail(
+                FAULT_BAD_GEOMETRY,
+                f"name {name!r} is already used by another {what} in this "
+                f"sketch; names must be unique within a sketch",
+            )
+        return
+    for index, taken in _names(sketch).items():
+        if taken == name:
+            _fail(
+                FAULT_BAD_GEOMETRY,
+                f"name {name!r} is already used by geometry {index}; names must "
+                f"be unique within a sketch",
+            )
+
+
+def _resolve_geometry(sketch: Any, reference: Any, what: str) -> int:
+    """Turn a name or a 1-based index into a 1-based geometry index.
+
+    A name is looked up; an integer is taken as given. Names are tried first
+    because a name is unambiguous, while an index shifts under the caller.
+    """
+    if isinstance(reference, str):
+        for index, name in _names(sketch).items():
+            if name == reference:
+                return index
+        known = sorted(_names(sketch).values())
+        _fail(
+            FAULT_BAD_GEOMETRY,
+            f"no geometry named {reference!r} in {sketch.Name}"
+            + (f"; it has {', '.join(known)}" if known else "; none are named"),
+        )
+    if isinstance(reference, bool) or not isinstance(reference, int):
+        _fail(
+            FAULT_BAD_GEOMETRY,
+            f"{what} must be a geometry name or a 1-based index, got {reference!r}",
+        )
+    return reference
 
 
 def remove_sketch_geometry(
     document: str,
     sketch_name: str,
-    index: int,
+    reference: Any,
 ) -> dict[str, Any]:
-    """Remove one geometry by its 1-based index.
+    """Remove one geometry, addressed by name or by its 1-based index.
 
-    Indices are renumbered by FreeCAD after a removal, which is why nothing in
-    the surface stores one: describe_geometry reports the current numbering.
+    FreeCAD renumbers geometry after a removal and says nothing about names, so
+    the mapping is reindexed here. Skipping that step leaves a name attached to
+    the wrong element - the exact silent-wrong-result this naming exists to
+    prevent, reintroduced by the naming itself.
     """
     doc = _require(document)
     sketch = _sketch(document, sketch_name)
-    if isinstance(index, bool) or not isinstance(index, int):
-        _fail(FAULT_BAD_GEOMETRY, f"index must be an integer, got {index!r}")
-    if not 1 <= index <= sketch.GeometryCount:
+    index = _resolve_geometry(sketch, reference, "index")
+    count = sketch.GeometryCount
+    if not 1 <= index <= count:
         _fail(
             FAULT_BAD_GEOMETRY,
-            f"{sketch_name} has {sketch.GeometryCount} geometries, so "
-            f"{index} does not exist",
+            f"{sketch_name} has {count} geometries, so {index} does not exist",
         )
+
+    # Everything after the removed element shifts down by one. Names are stored
+    # with the sketch, so this must be rewritten before returning.
+    removed_name = None
+    mapping: dict[int, str] = {}
+    for stored_index, name in _names(sketch).items():
+        if stored_index == index:
+            removed_name = name
+        elif stored_index > index:
+            mapping[stored_index - 1] = name
+        else:
+            mapping[stored_index] = name
+
     sketch.delGeometry(index - 1)
     doc.recompute()
-    return {"geometry_count": sketch.GeometryCount}
+    # Written after recompute so the stored mapping is never out of step with
+    # the geometry it describes, even if recompute reports a problem.
+    if _names(sketch) or mapping:
+        _write_names(sketch, mapping)
+    result: dict[str, Any] = {"geometry_count": sketch.GeometryCount}
+    if removed_name is not None:
+        result["removed_name"] = removed_name
+    return result
+
+
+def remove_sketch_constraint(
+    document: str,
+    sketch_name: str,
+    reference: Any,
+) -> dict[str, Any]:
+    """Remove one constraint, addressed by name or by its 1-based index.
+
+    This exists because a sketch is otherwise add-only. A caller who adds a
+    constraint and gets the wrong result has no way to undo it short of
+    discarding the sketch and its geometry - and geometry is the expensive part.
+    CAP-S4 claims dimensions are driven by named constraints, which is not true
+    of a surface where a constraint cannot be removed.
+
+    Constraints are renumbered by FreeCAD after a removal exactly as geometry
+    are, so the same one-convention rule applies: 1-based, and a name preferred
+    because FreeCAD attaches it to the constraint rather than the index.
+    """
+    doc = _require(document)
+    sketch = _sketch(document, sketch_name)
+    index = _constraint_ref(sketch, reference)
+    count = sketch.ConstraintCount
+    if not 1 <= index <= count:
+        _fail(
+            FAULT_NO_SUCH_CONSTRAINT,
+            f"{sketch_name} has {count} constraints, so {index} does not "
+            f"exist. Constraints are 1-based and renumbered after a removal; "
+            f"read the current list from sketch_status.",
+        )
+    removed_name = getattr(sketch.Constraints[index - 1], "Name", "")
+    sketch.delConstraint(index - 1)
+    doc.recompute()
+    result: dict[str, Any] = {
+        "constraint_count": sketch.ConstraintCount,
+        "dof": _solve(sketch),
+    }
+    if removed_name:
+        result["removed_name"] = removed_name
+    return result
 
 
 def add_sketch_constraint(
     document: str,
     sketch_name: str,
     kind: str,
-    first: int,
+    first: Any,
     first_pos: int,
-    second: int,
+    second: Any,
     second_pos: int,
     value: float,
+    name: Any = None,
 ) -> dict[str, Any]:
     """Add a constraint between two geometry elements.
 
@@ -1120,9 +1370,19 @@ def add_sketch_constraint(
     Parallel, Perpendicular, Equal, or Distance. Distance is the only one that
     uses ``value``; the others take two elements and ignore it.
 
-    Element indices are 0-based, as FreeCAD numbers them internally, while
-    geometry indices elsewhere in this surface are 1-based. That inconsistency
-    is FreeCAD's, not this tool's, and the hint says so.
+    ``first`` and ``second`` are **1-based**, matching every other index in this
+    surface - edges, faces, sketch_status and remove_sketch_geometry. They used
+    to be 0-based because FreeCAD numbers geometry internally from zero, and
+    that inconsistency was the last one; AD-19's principle is one convention
+    rather than two that can disagree. The translation to FreeCAD's numbering
+    happens here and nowhere else.
+
+    Either may also be a geometry **name**, which is what naming is for: a name
+    still refers to the right element after an unrelated removal renumbers it.
+
+    ``name`` gives the constraint itself a name, so a dimension can be
+    re-driven later with ``set_constraint_value`` and removed by name with
+    ``remove_sketch_constraint``.
     """
     import FreeCAD  # noqa: F401  (imported so a missing module fails as a fault)
     import Sketcher
@@ -1130,16 +1390,33 @@ def add_sketch_constraint(
     doc = _require(document)
     sketch = _sketch(document, sketch_name)
     count = sketch.GeometryCount
-    for label, value_ in (("first", first), ("second", second)):
-        if isinstance(value_, bool) or not isinstance(value_, int):
-            _fail(FAULT_BAD_GEOMETRY, f"{label} must be an integer, got {value_!r}")
-        if not 0 <= value_ < count:
+    # 1-based here, 0-based for FreeCAD. Named so the conversion is one obvious
+    # line rather than arithmetic sprinkled through the function. Each element
+    # may be given as a geometry name instead of an index, which is the point
+    # of naming: a name survives an edit that would renumber an index.
+    resolved = []
+    for label, given in (("first", first), ("second", second)):
+        index = _resolve_geometry(sketch, given, label)
+        if not 1 <= index <= count:
             _fail(
                 FAULT_BAD_GEOMETRY,
-                f"{label} geometry {value_} does not exist; {sketch_name} has "
-                f"{count}. FreeCAD numbers geometry from 0 here, unlike the "
-                f"1-based edge and geometry numbers used elsewhere.",
+                f"{label} geometry {index} does not exist; {sketch_name} has "
+                f"{count}. Indices are 1-based, as they are for edges and faces.",
             )
+        resolved.append(index)
+    first_index = resolved[0] - 1
+    second_index = resolved[1] - 1
+    # PosId, as FreeCAD names them, restricted to the values that are safe here.
+    # Probed against 1.1.3: 1 (start), 2 (end) and 3 (mid) build cleanly. `none`
+    # (0) is a real FreeCAD PosId but SKETCHER uses it internally for
+    # whole-element constraints, and passing it through CRASHES the interpreter
+    # for a two-element constraint - so it is excluded rather than allowed.
+    # Values above 3 are neither valid nor fatal: they are silently accepted and
+    # leave the solver reporting a negative dof, which is the silent-wrong-result
+    # class. All four cases are refused here, before the native constructor.
+    _POS_NAMES = {1: "start", 2: "end", 3: "mid"}
+    _POS_IDS = frozenset(_POS_NAMES)
+
     # An unknown kind is rejected before any Constraint is built. Building one
     # with the wrong arity does not raise - it terminates FreeCAD, which would
     # take the bridge down and orphan the document with it.
@@ -1159,17 +1436,51 @@ def add_sketch_constraint(
             f"{', '.join(sorted(_CONSTRAINT_KINDS))}",
         )
 
+    # PosId values, validated for the same reason the kind is. Probed against
+    # 1.1.3: an out-of-range position does not raise and does not crash - it is
+    # silently accepted and produces a nonsense constraint, with the solver
+    # reporting a negative dof. That is the silent-wrong-result class rather
+    # than the fatal one, and it is still wrong.
+    #
+    #  0 none, 1 start, 2 end, 3 mid. Verified that 1..3 build cleanly and that
+    #  0, 4 and 99 are accepted without complaint while wrecking the solve.
+    for label, pos in (("first_pos", first_pos), ("second_pos", second_pos)):
+        if pos not in _POS_IDS:
+            _fail(
+                FAULT_BAD_GEOMETRY,
+                f"{label} must be one of "
+                + ", ".join(f"{v} ({n})" for v, n in sorted(_POS_NAMES.items()))
+                + f", got {pos!r}",
+            )
+
+    # A Distance constraint's value is the only one that is used, and a
+    # non-positive or non-finite one produces a constraint that either cannot
+    # be satisfied or cannot be built. NaN in particular reaches the native
+    # constructor, which AD-25 exists to prevent.
+    if kind == "Distance":
+        if value != value or value in (float("inf"), float("-inf")):
+            _fail(FAULT_BAD_GEOMETRY, f"distance must be finite, got {value!r}")
+        if value <= 0:
+            _fail(
+                FAULT_BAD_GEOMETRY,
+                f"distance must be positive, got {value}. A negative or zero "
+                f"Distance constrains two points to coincide or to separate "
+                f"impossibly.",
+            )
+
     try:
         if kind == "Distance":
             constraint = Sketcher.Constraint(
-                kind, first, first_pos, second, second_pos, value
+                kind, first_index, first_pos, second_index, second_pos, value
             )
         else:
             # Passing the value argument to a two-element constraint CRASHES
             # FreeCAD outright rather than raising, which takes the whole
             # bridge process down with it. Verified against 1.1.3: the 4-arg
             # form returns a Constraint, the 6-arg form kills the interpreter.
-            constraint = Sketcher.Constraint(kind, first, first_pos, second, second_pos)
+            constraint = Sketcher.Constraint(
+                kind, first_index, first_pos, second_index, second_pos
+            )
     except Exception as error:
         _fail(
             FAULT_BAD_GEOMETRY,
@@ -1178,11 +1489,26 @@ def add_sketch_constraint(
             f"Equal, Distance.",
         )
         return {}  # unreachable
+    # Named before the constraint exists, for the same reason as a geometry
+    # name: nothing here can fail once the constraint is in.
+    existing_names = {c.Name for c in sketch.Constraints if getattr(c, "Name", "")}
+    _check_name(None, name, "constraint", existing=existing_names)
+
     index = sketch.addConstraint(constraint)
     doc.recompute()
-    dof = sketch.solve()
+    if name:
+        # FreeCAD attaches the name to the constraint rather than to its index,
+        # so unlike a geometry name this one needs no reindexing - verified
+        # against 1.1.3: deleting an earlier constraint leaves the later name
+        # attached to the right one.
+        try:
+            sketch.renameConstraint(index, name)
+            doc.recompute()
+        except Exception as error:
+            _fail(FAULT_BAD_GEOMETRY, f"cannot name the constraint: {error}")
+    dof = _solve(sketch)
     return {
-        "constraint_index": index,
+        "constraint_index": index + 1,
         "constraint_count": sketch.ConstraintCount,
         "dof": dof,
         "fully_constrained": bool(sketch.FullyConstrained),
@@ -1191,6 +1517,113 @@ def add_sketch_constraint(
         # still added: the caller needs to know it is now fighting itself.
         "over_constrained": dof < 0,
     }
+
+
+def _constraint_ref(sketch: Any, reference: Any, what: str = "index") -> int:
+    """Turn a constraint name or a 1-based index into a 1-based index."""
+    if isinstance(reference, str):
+        for index, constraint in enumerate(sketch.Constraints):
+            if getattr(constraint, "Name", "") == reference:
+                return index + 1
+        known = sorted(c.Name for c in sketch.Constraints if getattr(c, "Name", ""))
+        _fail(
+            FAULT_NO_SUCH_CONSTRAINT,
+            f"no constraint named {reference!r} in {sketch.Name}"
+            + (f"; it has {', '.join(known)}" if known else "; none are named"),
+        )
+    if isinstance(reference, bool) or not isinstance(reference, int):
+        _fail(
+            FAULT_NO_SUCH_CONSTRAINT,
+            f"{what} must be a constraint name or a 1-based index, got {reference!r}",
+        )
+    return reference
+
+
+def set_constraint_value(
+    document: str,
+    sketch_name: str,
+    reference: Any,
+    value: float,
+) -> dict[str, Any]:
+    """Change the value of a dimensional constraint, by name or by index.
+
+    This is the reason to name a constraint. A Distance constraint added by
+    index can only be *removed* and re-added to change it; a named one can be
+    re-driven, which is the difference between a parametric sketch and a
+    finished one. FreeCAD's own solver moves the geometry when this is called,
+    so a named dimension is a handle on the model rather than a label.
+
+    Only dimensional constraints have a value. A Coincident has none, and
+    setting one is refused with that said plainly rather than by whatever
+    FreeCAD happens to do with it.
+    """
+    import FreeCAD
+
+    doc = _require(document)
+    sketch = _sketch(document, sketch_name)
+    index = _constraint_ref(sketch, reference)
+    amount = _number(value, "value")
+    if amount <= 0:
+        _fail(
+            FAULT_BAD_GEOMETRY,
+            f"value must be positive, got {amount}. A zero or negative "
+            f"dimension constrains two points to coincide or separate "
+            f"impossibly.",
+        )
+    constraint = sketch.Constraints[index - 1]
+    kind = getattr(constraint, "Type", "")
+    if kind != "Distance":
+        _fail(
+            FAULT_BAD_GEOMETRY,
+            f"constraint {index} is a {kind}, which has no value to set. Only "
+            f"a Distance constraint is dimensional; use "
+            f"remove_sketch_constraint and add_sketch_constraint to change "
+            f"another kind.",
+        )
+    before = sketch.GeometryCount
+    try:
+        sketch.setDatum(index - 1, FreeCAD.Units.Quantity(f"{amount} mm"))
+    except Exception as error:
+        _fail(FAULT_BAD_GEOMETRY, f"cannot set the constraint: {error}")
+    doc.recompute()
+    if sketch.GeometryCount != before:
+        # FreeCAD replaced geometry rather than moving it. The sketch is now
+        # not what the caller described, and the constraint count may have
+        # changed under them, so this is reported rather than passed over.
+        sketch.undo()
+        doc.recompute()
+        _fail(
+            FAULT_BAD_GEOMETRY,
+            f"setting that value would have replaced sketch geometry "
+            f"({before} pieces would become {sketch.GeometryCount}); the sketch "
+            f"was rolled back. The dimension is probably larger than the "
+            f"geometry it is driving.",
+        )
+    # Read back from the constraint rather than echoing what was sent: a
+    # constraint the solver clamped would otherwise report the request.
+    applied = getattr(sketch.Constraints[index - 1], "Value", amount)
+    return {
+        "constraint_index": index,
+        "constraint_name": getattr(constraint, "Name", ""),
+        "value": applied,
+        "dof": _solve(sketch),
+    }
+
+
+def _solve(sketch: Any) -> int:
+    """The sketch's remaining degrees of freedom, or -1 if the solver cannot say.
+
+    Guarded because it is the one call in this area that can fail on a
+    malformed sketch, and an exception escaping here would surface as an
+    xmlrpc-level error rather than a typed fault - the caller would get a bare
+    xmlrpc Fault instead of a ``kind`` and a ``hint``. -1 is also FreeCAD's own
+    convention for "solver could not converge", so the value is meaningful
+    rather than merely safe, and ``over_constrained`` is checked against it.
+    """
+    try:
+        return int(sketch.solve())
+    except Exception:
+        return -1
 
 
 def sketch_status(document: str, sketch_name: str) -> dict[str, Any]:
@@ -1206,25 +1639,74 @@ def sketch_status(document: str, sketch_name: str) -> dict[str, Any]:
     shape = sketch.Shape
     geometry_count = sketch.GeometryCount
 
+    # 0-based inside, 1-based out, so `names` can be looked up directly by the
+    # element numbers the constraints report below.
+    names = {index - 1: name for index, name in _names(sketch).items()}
     result: dict[str, Any] = {
         "sketch": sketch_name,
         "geometry_count": geometry_count,
+        "constraint_count": sketch.ConstraintCount,
+        # The name mapping, so a caller can see what it named and stop
+        # counting. `geometry` is 1-based like every index in this surface.
+        "geometry": [
+            {"geometry": index, "name": name}
+            for index, name in sorted(_names(sketch).items())
+        ],
+        # Every constraint, with the element references it actually resolved
+        # to and the names of those elements where they have one. Without this
+        # a caller cannot tell which geometry a constraint ended up on, which
+        # is the one thing worth knowing after constraining by name.
+        "constraints": [
+            {
+                "constraint": position + 1,
+                "name": getattr(constraint, "Name", ""),
+                "kind": getattr(constraint, "Type", ""),
+                "first": getattr(constraint, "First", -1) + 1,
+                "first_pos": getattr(constraint, "FirstPos", 0),
+                "first_name": names.get(getattr(constraint, "First", -1), ""),
+                "second": getattr(constraint, "Second", -1) + 1,
+                "second_pos": getattr(constraint, "SecondPos", 0),
+                "second_name": names.get(getattr(constraint, "Second", -1), ""),
+                "value": getattr(constraint, "Value", None),
+            }
+            for position, constraint in enumerate(sketch.Constraints)
+        ],
         "closed": False,
         "edge_count": 0,
+        "wire_count": 0,
         "area": 0.0,
         "dof": 0,
         "fully_constrained": False,
         "over_constrained": False,
+        # Why `closed` is false, so a caller does not have to infer it. The
+        # distinction matters: an open profile is a drawing mistake, while
+        # several wires is a plate with holes, which is a valid shape this
+        # surface simply cannot extrude in one step.
+        "closed_reason": "",
     }
     if geometry_count == 0 or shape.isNull():
+        result["closed_reason"] = "no geometry yet"
         return result
 
     wires = shape.Wires
     result["edge_count"] = len(shape.Edges)
     result["wire_count"] = len(wires)
-    result["dof"] = sketch.solve()
+    result["dof"] = _solve(sketch)
     result["fully_constrained"] = bool(sketch.FullyConstrained)
     result["over_constrained"] = result["dof"] < 0
+
+    if len(wires) > 1:
+        result["closed_reason"] = (
+            f"{len(wires)} separate wires, so the profile has an interior "
+            f"boundary - a plate with holes. Extrude the outer outline and cut "
+            f"the holes with boolean_op."
+        )
+    elif not wires:
+        result["closed_reason"] = "no wire"
+    elif not wires[0].isClosed():
+        result["closed_reason"] = (
+            "the outline does not close; its ends fail to meet end to end"
+        )
 
     if len(wires) == 1 and wires[0].isClosed():
         result["closed"] = True
@@ -1240,7 +1722,7 @@ def attach_sketch_to_face(
     document: str,
     sketch_name: str,
     target: str,
-    face_name: str,
+    face_name: int,
 ) -> dict[str, Any]:
     """Snap a sketch onto a planar face of another object, flat to it.
 
@@ -1250,53 +1732,105 @@ def attach_sketch_to_face(
     the top face of a box moved it to z=4 and extruding 2mm gave 900mm3
     spanning z 4 to 6.
 
-    ``face_name`` is a ``Face{N}`` index as reported by describe_geometry.
-    FreeCAD's property is ``AttachmentSupport``; the FreeCAD 0.x name was
-    ``Support``, which raises here.
+    ``face_name`` is a 1-based index as reported by describe_geometry, the
+    same convention edges use. FreeCAD's property is ``AttachmentSupport``; the
+    FreeCAD 0.x name was ``Support``, which raises here.
     """
-    import re as _re
-
     import Part
 
     doc = _require(document)
     sketch = _sketch(document, sketch_name)
     host = _object(doc, target)
 
-    match = _re.fullmatch(r"Face(\d+)", str(face_name))
-    if match is None:
+    # A sketch attached to itself is a self-referential parametric link: the
+    # attachment engine would resolve the support by recomputing the very
+    # object it is recomputing. That is a plausible wedged FreeCAD process
+    # rather than a catchable exception, which is the failure class AD-20 and
+    # AD-22 both exist to prevent. Cheap to refuse, so refuse it.
+    if host.Name == sketch.Name:
         _fail(
             FAULT_BAD_GEOMETRY,
-            f"face must look like Face3, got {face_name!r}; call "
+            f"{sketch_name} cannot be attached to its own face; a sketch has no "
+            f"face to attach to, and self-reference would make it depend on "
+            f"itself during recompute",
+        )
+
+    # A face is addressed by a 1-based integer, exactly as edges are. The
+    # previous form took a "Face{N}" string matched by regex, which meant one
+    # caller mistake got three different answers across the surface: Edge99
+    # raised BadGeometry, Face99 raised NoSuchFace, and "face6" raised
+    # BadGeometry. One convention, one error.
+    if isinstance(face_name, bool) or not isinstance(face_name, int):
+        _fail(
+            FAULT_BAD_GEOMETRY,
+            f"face must be an integer index, got {face_name!r}; use "
             f"describe_geometry on {target} to list its faces",
         )
-    index = int(match.group(1))
+    index = face_name
     shape = getattr(host, "Shape", None)
     if shape is None or shape.isNull():
         _fail(FAULT_NO_SHAPE, f"{target} has no shape to attach to")
     if not 1 <= index <= len(shape.Faces):
         _fail(
-            FAULT_NO_SUCH_FACE,
-            f"{target} has {len(shape.Faces)} faces, so {face_name} does not exist",
+            FAULT_BAD_GEOMETRY,
+            f"{target} has {len(shape.Faces)} faces, so Face{index} does not exist",
         )
     face = shape.Faces[index - 1]
+    face_ref = f"Face{index}"
     # Only a planar face can carry a flat sketch. Refusing here beats an
     # attachment that silently produces a degenerate placement.
+    #
+    # The area test is belt-and-braces: no FreeCAD primitive probed on 1.1.3
+    # yields a zero-area Part.Plane (a zero-height cylinder still has two
+    # full-radius caps), so this branch is not reachable through the current
+    # tool surface. It is kept because a caller can build the degenerate case
+    # by other means and the cost is one comparison, but it is not the guard
+    # doing the work here - planarity is.
     if not isinstance(face.Surface, Part.Plane):
         _fail(
             FAULT_NO_SUCH_FACE,
-            f"{face_name} of {target} is a {type(face.Surface).__name__}, not a "
-            f"plane; a sketch can only be attached flat to a planar face",
+            f"{face_ref} of {target} is a {type(face.Surface).__name__}, not a "
+            f"plane; a sketch can only attach flat to a planar face",
+        )
+    if not face.Area > 1e-9:
+        _fail(
+            FAULT_NO_SUCH_FACE,
+            f"{face_ref} of {target} is a plane of area {face.Area:.6g}, which "
+            f"is too small to carry a profile",
         )
 
-    sketch.AttachmentSupport = [(host, (face_name,))]
-    sketch.MapMode = "FlatFace"
+    try:
+        sketch.AttachmentSupport = [(host, (face_ref,))]
+        sketch.MapMode = "FlatFace"
+    except Exception as error:
+        _fail(
+            FAULT_BAD_GEOMETRY,
+            f"cannot attach {sketch_name} to {face_ref} of {target}: {error}",
+        )
+        return {}  # unreachable
     doc.recompute()
+
+    # Post-condition. Reported rather than asserted: no reachable failure was
+    # found on 1.1.3 - a bad target raises ObjectNotFound before the
+    # assignment, a non-planar face is refused above, and a valid planar
+    # attachment resolves. It is kept because the cost is two comparisons and
+    # the alternative is trusting FreeCAD's assignment to have taken, but
+    # `placement` is what a caller actually reads, and the test asserts that
+    # against the face's real position rather than asserting this branch fires.
+    origin = sketch.Placement.Base
+    plane = face.Surface
+    attached = (
+        sketch.MapMode == "FlatFace"
+        and abs(plane.Axis.dot(origin.sub(plane.Position))) < 1e-6
+    )
+
     return {
         "sketch": sketch_name,
         "attached_to": target,
-        "face": face_name,
+        "face": face_ref,
         "map_mode": sketch.MapMode,
-        "placement": _vec(sketch.Placement.Base),
+        "placement": _vec(origin),
+        "on_face_plane": attached,
     }
 
 
@@ -1330,13 +1864,33 @@ def sketch_to_face(
     # and Part.Face on an open wire does not raise, it returns something wrong.
     wire = _profile_wire(sketch)
 
-    feature = _feature(result_name, "Part::Feature", document)
-    face = Part.Face(Part.Wire(wire.Edges))
-    if face.Area <= 0.0:
+    # Build and validate the face BEFORE creating the object. Creating first
+    # left an orphan Part::Feature with a null Shape in the document on every
+    # failure path, under the caller's own name: list_objects showed it,
+    # describe_geometry on it raised NO_SHAPE, and a retry hit the same name.
+    try:
+        face = Part.Face(Part.Wire(wire.Edges))
+    except Exception as error:
+        # Part.Face does not always raise cleanly on a degenerate wire, and an
+        # exception escaping here reaches the client as xmlrpc's generic code 1
+        # rather than a named sketch fault.
+        _fail(
+            FAULT_BAD_GEOMETRY,
+            f"{sketch_name} will not make a face: {error}. A self-intersecting "
+            f"or degenerate profile cannot become one",
+        )
+        return ""  # unreachable
+    # `not > 0.0` rather than `<= 0.0`: NaN compares false against 0.0, so a
+    # NaN area would otherwise pass and be reported as a valid face.
+    if not face.isValid() or not face.Area > 0.0:
         _fail(
             FAULT_EMPTY_RESULT,
-            f"{sketch_name} encloses no area, so it makes no face; check sketch_status",
+            f"{sketch_name} makes no usable face (valid={face.isValid()}, "
+            f"area={face.Area}); a profile must enclose area and not "
+            f"self-intersect. Check sketch_status",
         )
+
+    feature = _feature(result_name, "Part::Feature", document)
     feature.Shape = face
     doc.recompute()
     return feature.Name
@@ -1373,28 +1927,48 @@ def extrude_sketch(
     # The check that matters. Without it this returns a wrong solid silently.
     _profile_wire(sketch)
 
+    # Everything knowable before the feature exists is checked before it is
+    # created. The solid checks below can only run after a recompute, and a
+    # refusal there used to leave a half-built Part::Extrusion in the document
+    # under the caller's own name - the orphan that 839a08e fixed in
+    # sketch_to_face and that survived here. The feature is removed before the
+    # error is raised, so a failed extrude leaves the document as it found it.
     feature = _feature(result_name, "Part::Extrusion", document)
-    feature.Base = sketch
-    feature.DirMode = "Normal"
-    feature.LengthFwd = length
-    feature.Solid = True
-    doc.recompute()
+    try:
+        feature.Base = sketch
+        feature.DirMode = "Normal"
+        feature.LengthFwd = length
+        feature.Solid = True
+        doc.recompute()
 
-    shape = feature.Shape
-    if shape.isNull() or not shape.Solids:
-        _fail(
-            FAULT_EMPTY_RESULT,
-            f"extruding {sketch_name} by {length} produced no solid; the "
-            f"profile may be self-intersecting or degenerate. Check "
-            f"sketch_status.",
-        )
-    if len(shape.Solids) > 1:
-        _fail(
-            FAULT_BAD_GEOMETRY,
-            f"extruding {sketch_name} produced {len(shape.Solids)} separate "
-            f"solids, which means the profile is not a single connected "
-            f"outline. Check sketch_status.",
-        )
+        shape = feature.Shape
+        if shape.isNull() or not shape.Solids:
+            _fail(
+                FAULT_EMPTY_RESULT,
+                f"extruding {sketch_name} by {length} produced no solid; the "
+                f"profile may be self-intersecting or degenerate. Check "
+                f"sketch_status.",
+            )
+        if len(shape.Solids) > 1:
+            _fail(
+                FAULT_BAD_GEOMETRY,
+                f"extruding {sketch_name} produced {len(shape.Solids)} separate "
+                f"solids, which means the profile is not a single connected "
+                f"outline. Check sketch_status.",
+            )
+        if not shape.isValid():
+            _fail(
+                FAULT_BAD_GEOMETRY,
+                f"extruding {sketch_name} by {length} produced an invalid "
+                f"solid; the profile is self-intersecting. Check "
+                f"sketch_status.",
+            )
+    except Fault:
+        # A Fault carries the typed error the caller should see. Remove the
+        # feature first so nothing is left behind, then let it propagate.
+        doc.removeObject(feature.Name)
+        doc.recompute()
+        raise
     return feature.Name
 
 

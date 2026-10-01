@@ -191,6 +191,61 @@ This is AD-22 in the spine.
 
 Enforced by `test_unknown_constraint_kind_is_refused_without_crashing`.
 
+### A `PosId` of 0 crashes; a `PosId` of 4 is silently accepted
+
+The position argument is validated against `{1, 2, 3}` — start, end, mid — and
+the two out-of-range cases fail *differently*, which is why the safe set rather
+than the legal set governs (AD-28):
+
+- `PosId 0` is FreeCAD's internal `none`. It is a real PosId, used by SKETCHER
+  for whole-element constraints, and passing it to a two-element constraint
+  **terminates the interpreter**. It looks safe because it is legal.
+- `PosId 4` and `99` are neither valid nor fatal. They are accepted silently and
+  leave the solver reporting a **negative dof** — the silent-wrong-result class,
+  which is harder to notice than the crash.
+
+Probed rather than assumed; the values that build cleanly are 1, 2 and 3.
+
+Enforced by `test_constraint_positions_are_validated` and
+`test_valid_constraint_positions_are_accepted` — the second exists so the guard
+cannot degenerate into refusing everything.
+
+### Removing geometry renumbers it, and leaves names behind
+
+`delGeometry` shifts every later element down one: with two elements, deleting
+the first moves the survivor from index 1 to index 0. FreeCAD knows nothing
+about names this surface stores, so **the mapping must be reindexed in the same
+call** or a name comes to point at the wrong element (AD-30).
+
+Constraint names are the opposite case and need no help: `renameConstraint`
+attaches the name to the constraint, so deleting an earlier constraint leaves
+the later name on the right one. Verified both ways.
+
+Enforced by `test_a_name_survives_the_removal_that_renumbers_it` and
+`test_a_constraint_name_follows_the_constraint_not_the_index`.
+
+### XML-RPC cannot carry `None`
+
+The server runs with `allow_none=False`, so a `None` argument raises
+`TypeError: cannot marshal None` *on the client*, before anything is sent. An
+absent optional name travels as an **empty string** instead, which the bridge
+treats as "no name". Whitespace-only is still refused, because unlike `""` it
+looks like a name that was meant to be something.
+
+The same trap catches an int-keyed dict in a *result*: `{"geometry": 1}` fails
+to marshal, so name mappings are reported as a list of objects.
+
+Enforced by `test_an_omitted_name_means_none_at_all`.
+
+### `sketch_status`'s area depends on constraints, not coordinates
+
+Re-driving a named `Distance` makes the solver **move** the geometry. Without
+`Horizontal`/`Vertical`/`Coincident` constraints, four independent lines stretch
+into a shape that no longer closes, and area falls to 0.0 — correct, not a bug.
+Four `Coincident` plus two `Distance` constraints give a closed but skewed
+quadrilateral (area 950.7 at 60x20 rather than 1200), because nothing pins the
+corners square. `dof` and `fully_constrained` are what tell the two apart.
+
 ### A sketch's `Shape.Area` is 0.0
 
 A wire encloses no area, so a closed profile still reports 0.0. Get area from
@@ -213,6 +268,51 @@ name.
 
 Moving a sketch afterwards does not move a solid already extruded. Position
 first, then extrude.
+
+### NaN and infinity terminate FreeCAD
+
+Every comparison-based guard is transparent to NaN: `nan == 0`, `nan < 0` and
+`nan <= 0` are all `False`, so `if length <= 0` does not fire and the value
+reaches `LengthFwd`. FreeCAD does not reject it either — probed against 1.1.3,
+`Part::Extrusion` with `LengthFwd = nan` **killed the interpreter mid-script**,
+taking every open document with it. `json` and `xmlrpc` both marshal NaN
+happily, so this is reachable from ordinary input.
+
+Refused at the two choke points every dimension passes through: `_dim` in
+`bridge.py` before the round trip and `_number` in `_freecad_bridge.py` after
+it. `math.isfinite` is the check; comparing is not. AD-25.
+
+Enforced by `test_non_finite_dimensions_are_refused`.
+
+### Creating an object before validating it leaves an orphan
+
+`_feature(name, kind, document)` adds the object to the document immediately.
+Anything checked after that runs with a half-built feature already present, so
+a refusal leaves it behind under the caller's own name: `list_objects` shows
+it, `describe_geometry` on it raises `NO_SHAPE`, and a retry under the same
+name collides.
+
+Found twice. `sketch_to_face` was fixed by building and validating the face
+first. `extrude_sketch` kept the old order for a while, and both of its
+post-recompute checks — no solids, more than one solid — ran after creation;
+a self-intersecting bowtie left `['Bow', 'Orphan']` in the document. Validation
+that cannot happen before creation is followed by rollback, not hope. AD-26.
+
+Enforced by `test_a_failed_face_leaves_nothing_behind` and
+`test_a_failed_extrude_leaves_nothing_behind`. Note the fixture: an *open*
+profile is refused by `_profile_wire` before anything is created, and a zero
+depth by the length check, so neither can orphan anything. A self-intersecting
+profile is the only path that reaches the post-create checks.
+
+### int(True) is 1, so a bare int() is a destructive edit
+
+`int()` in the client converts before the wire, so a bool or a numeric string
+becomes a plausible index and the bridge's own guard never sees it.
+`remove_sketch_geometry(doc, "S", True)` silently deleted geometry 1. Use
+`_index()` — which also refuses floats and strings — and `_dim()` for
+coordinates. AD-22's rule applied to types rather than to values.
+
+Enforced by `test_index_arguments_reject_bools_and_strings`.
 
 ### Draft is unavailable headlessly
 

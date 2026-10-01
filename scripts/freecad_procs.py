@@ -8,6 +8,14 @@ for as long as it did. See AD-20.
 
 Matching on the bridge script path is what makes this safe to run: a FreeCAD
 you are using through the GUI is a different process and is left alone.
+
+**This gate fails closed.** It reports a clean bill of health only when it
+actually looked and found nothing. Every path where it cannot see - PowerShell
+missing, `Get-CimInstance` failing, the JSON shape shifting, `tasklist`
+changing its columns - exits non-zero and says so, rather than returning an
+empty list that reads as "no leaks". An unobservable gate is a red gate; the
+version that returned `{}` on error was a green one that reported success
+while blind.
 """
 
 from __future__ import annotations
@@ -20,14 +28,33 @@ import sys
 BRIDGE_MARKER = "_freecad_bridge.py"
 
 
+class CannotObserve(RuntimeError):
+    """Raised when the process list could not be determined.
+
+    Distinct from "there are none". Callers must not treat an inability to
+    look as an absence of leaks.
+    """
+
+
 def freecad_pids() -> list[int]:
-    """PIDs of every freecadcmd.exe on this machine."""
-    result = subprocess.run(
-        ["tasklist", "/FI", "IMAGENAME eq freecadcmd.exe", "/FO", "CSV", "/NH"],
-        capture_output=True,
-        text=True,
-        timeout=30,
-    )
+    """PIDs of every freecadcmd.exe on this machine.
+
+    Raises CannotObserve if tasklist itself fails, since an empty result is
+    then indistinguishable from a machine with no FreeCAD at all.
+    """
+    try:
+        result = subprocess.run(
+            ["tasklist", "/FI", "IMAGENAME eq freecadcmd.exe", "/FO", "CSV", "/NH"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        raise CannotObserve(f"cannot run tasklist: {error}") from error
+    if result.returncode != 0:
+        raise CannotObserve(
+            f"tasklist exited {result.returncode}: {result.stderr.strip()}"
+        )
     pids: list[int] = []
     for line in result.stdout.splitlines():
         parts = [p.strip('" ') for p in line.split('","')]
@@ -37,26 +64,42 @@ def freecad_pids() -> list[int]:
 
 
 def command_lines() -> dict[int, str]:
-    """pid -> full command line, for every running process."""
-    result = subprocess.run(
-        [
-            "powershell",
-            "-NoProfile",
-            "-Command",
-            "Get-CimInstance Win32_Process | "
-            "Select-Object ProcessId, CommandLine | "
-            "ConvertTo-Json -Compress",
-        ],
-        capture_output=True,
-        text=True,
-        timeout=60,
-    )
-    if result.returncode != 0 or not result.stdout.strip():
+    """pid -> full command line, for every running process.
+
+    Raises CannotObserve rather than returning {} on any failure: an empty
+    dict would make every bridge look absent, and the caller would report a
+    clean machine while having asked nothing.
+    """
+    try:
+        result = subprocess.run(
+            [
+                "powershell",
+                "-NoProfile",
+                "-Command",
+                "Get-CimInstance Win32_Process | "
+                "Select-Object ProcessId, CommandLine | "
+                "ConvertTo-Json -Compress",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        raise CannotObserve(f"cannot run powershell: {error}") from error
+    if result.returncode != 0:
+        raise CannotObserve(
+            f"powershell exited {result.returncode}: {result.stderr.strip()}"
+        )
+    if not result.stdout.strip():
+        # ConvertTo-Json emits nothing at all when there are no processes,
+        # which is a legitimate answer rather than a failure.
         return {}
     try:
         data = json.loads(result.stdout)
-    except json.JSONDecodeError:
-        return {}
+    except json.JSONDecodeError as error:
+        raise CannotObserve(
+            f"cannot parse the process list as JSON: {error}"
+        ) from error
     if isinstance(data, dict):  # a single process serialises as an object
         data = [data]
     out: dict[int, str] = {}
@@ -80,22 +123,43 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    pids = ours()
+    try:
+        pids = ours()
+    except CannotObserve as error:
+        print(f"cannot tell whether FreeCAD leaked: {error}")
+        print("This is not a clean result - the process list could not be read.")
+        return 2
+
     if not pids:
         print("no FreeCAD processes from this project")
         return 0
 
+    failed: list[int] = []
     for pid in pids:
         if args.stop:
-            subprocess.run(
-                ["taskkill", "/PID", str(pid), "/F"],
-                capture_output=True,
-                text=True,
-                timeout=30,
-            )
-            print(f"stopped pid {pid}")
+            try:
+                result = subprocess.run(
+                    ["taskkill", "/PID", str(pid), "/F"],
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                )
+                ok = result.returncode == 0
+            except OSError, subprocess.SubprocessError:
+                ok = False
+            if ok:
+                print(f"stopped pid {pid}")
+            else:
+                failed.append(pid)
+                print(f"could not stop pid {pid}")
         else:
             print(f"LEAK: pid {pid} is still running and holding its port")
+
+    if failed:
+        print()
+        print(f"{len(failed)} process(es) are still running and still holding their")
+        print("ports, so the next run may fail for the wrong reason.")
+        return 1
 
     if not args.stop:
         print()

@@ -16,6 +16,7 @@ integration-marked.
 
 from __future__ import annotations
 
+import math
 import re
 from pathlib import Path
 
@@ -124,6 +125,51 @@ def test_agents_md_decision_count_matches_the_spine() -> None:
     )
 
 
+def test_agents_md_covers_the_packaging_traps() -> None:
+    """AGENTS.md is the first thing an agent reads, so an absent trap is hit.
+
+    The managed block is refreshed by `bmad-project-context`, so these live
+    outside it — but "outside" is not self-enforcing, and a refresh that moved
+    the section inward would drop the content without failing anything.
+
+    Asserted on the substance rather than the heading: the three traps are the
+    things that cannot be derived by reading the code, since each one produces
+    an executable that appears to work. A section heading alone would pass and
+    teach nothing.
+    """
+    agents = _require(AGENTS)
+    _, _, outside = agents.partition("<!-- /bmad:context -->")
+
+    for needed in (
+        "freeze",
+        "_freecad_bridge.py",
+        "__main__.py",
+        "_MEIPASS",
+    ):
+        assert needed in outside, (
+            f"AGENTS.md's unmanaged section does not mention {needed!r}. It is "
+            f"outside the managed block precisely so it survives a refresh, and "
+            f"an agent hitting that trap would otherwise rediscover it the hard "
+            f"way."
+        )
+
+
+def test_agents_md_paths_exist_covers_the_packaging_paths() -> None:
+    """Every path AGENTS.md names must exist, packaging ones included.
+
+    The existing path check only looks inside the managed block's own regex
+    shape, so a path introduced in the sections below the markers is unchecked.
+    """
+    agents = _require(AGENTS)
+    _, _, outside = agents.partition("<!-- /bmad:context -->")
+    paths = re.findall(
+        r"`([\w./-]*(?:packaging|scripts|src|tests|dist)/[\w./-]+)`", outside
+    )
+    assert paths, "the unmanaged section of AGENTS.md names no artifact path"
+    missing = [p for p in paths if not (ROOT / p).exists()]
+    assert not missing, f"AGENTS.md names paths that do not exist: {missing}"
+
+
 def test_agents_md_capability_count_matches_the_spec() -> None:
     agents = _require(AGENTS)
     spec = _require(SPEC)
@@ -135,6 +181,127 @@ def test_agents_md_capability_count_matches_the_spec() -> None:
     )
     assert f"CAP-1…CAP-{highest}" in agents, (
         f"the spec holds {highest} capabilities, which AGENTS.md does not say"
+    )
+
+
+def _registered_tool_names() -> list[str]:
+    """Every tool name passed to the `_tool` decorator, in registration order.
+
+    Read from the source rather than from the imported registry: the count
+    matters as documentation, and importing would make this test depend on the
+    module it is checking. The name is the first string literal after the
+    decorator, however the call is wrapped across lines.
+    """
+    source = SERVER.read_text(encoding="utf-8")
+    names = re.findall(r'@_tool\(\s*"(\w+)"', source)
+    assert names, "no @_tool registrations found in server.py"
+    return names
+
+
+def _fenced_blocks(markdown: str) -> list[str]:
+    """The bodies of every fenced code block, correctly paired.
+
+    A naive ``r"```(?:python)?\\n(.*?)```"`` matches a *closing* fence as readily
+    as an opening one, so it pairs each close with the next open and returns
+    spans made of ordinary prose and markdown tables. That is not a cosmetic
+    mistake: the example check built on it passed a mutation that corrupted an
+    example, because the example was never inside the text it was scanning.
+
+    The opening fence carries an optional info string and the closing one does
+    not, which is what makes the pairing unambiguous.
+    """
+    return re.findall(r"^```[\w]*\n(.*?)^```[ \t]*$", markdown, re.DOTALL | re.M)
+
+
+def test_readme_documents_every_tool() -> None:
+    """A tool absent from the README is a tool nobody knows exists.
+
+    The other checks in this file guard counts. This one guards *coverage*, and
+    the gap it covers is the one a count cannot see: the README's tool table
+    said "36 tools" while omitting 13 of them - the entire sketch surface plus
+    `distance`, `is_inside` and `cross_section`. A correct count next to a table
+    that lists two thirds of the surface reads as complete.
+
+    Naming the tool in backticks is the bar. Prose about what it does is not
+    required, because that is a judgement call; presence is not.
+    """
+    readme = _require(README)
+    names = _registered_tool_names()
+    # A *table row*, not merely the name somewhere in the file. The first
+    # version of this test accepted a mention in prose, and then passed a
+    # mutation that had renamed a tool in the table while leaving an example
+    # using it - which is not a documentation gap, but it did prove the check
+    # was measuring the wrong thing.
+    rows = [line for line in readme.splitlines() if line.startswith("|")]
+    table = "\n".join(rows)
+    missing = [name for name in names if f"`{name}`" not in table]
+    assert not missing, (
+        f"the README's tool tables do not list {len(missing)} of {len(names)} "
+        f"tools: {missing}. The table says how many there are, so a reader has "
+        f"no way to tell which are absent rather than merely undescribed."
+    )
+
+
+def test_readme_tool_count_matches_the_registry() -> None:
+    """The number the README states, checked against the registry itself.
+
+    Separate from the coverage check because they fail differently. This one
+    catches a stale total after a tool is removed; the coverage check catches a
+    tool that exists but is unlisted. Passing both means the table is neither
+    wrong nor incomplete.
+    """
+    readme = _require(README)
+    expected = len(_registered_tool_names())
+    # The count appears as "N tools" in the architecture listing.
+    stated = re.findall(r"MCP server, (\d+) tools", readme)
+    assert stated, "README no longer states a tool count"
+    assert int(stated[0]) == expected, (
+        f"the README says {stated[0]} tools; {expected} are registered"
+    )
+
+
+def test_every_readme_example_names_a_real_tool() -> None:
+    """Backticked snake_case words in code blocks must be real tools.
+
+    The examples are the part of the README most likely to be copied verbatim,
+    so a tool renamed or removed leaves a snippet that fails at the first call
+    with no indication the documentation is the problem. Restricted to fenced
+    blocks and to snake_case identifiers, so ordinary prose and CamelCase type
+    names are not mistaken for tools.
+    """
+    readme = _require(README)
+    names = set(_registered_tool_names())
+    blocks = _fenced_blocks(readme)
+    assert blocks, "README has no fenced code blocks to check"
+
+    used: set[str] = set()
+    for block in blocks:
+        # Only *calls* count: a name followed by an opening parenthesis. The
+        # first version matched any snake_case word, so it flagged the response
+        # keys the examples legitimately show - `edge_count`, `solid_count` -
+        # along with `freecad_ai` and `freecad_procs`, which are a module and a
+        # script. A tool call and a JSON field are not the same thing.
+        used |= set(re.findall(r"\b([a-z][a-z0-9]*_[a-z0-9_]*)\s*\(", block))
+    unknown = sorted(used - names)
+    assert not unknown, (
+        f"the README's examples call {unknown}, which are not tools. Either the "
+        f"examples are stale or they use a name the surface does not have."
+    )
+
+
+def test_readme_claims_the_index_convention() -> None:
+    """The 1-based rule is load-bearing and easy to lose in a rewrite.
+
+    Every index in the surface is 1-based - edges, faces, geometry, constraint
+    elements - and constraint indices were the last holdout at 0-based until
+    AD-27. A README that documents the sketch tools without saying so would
+    leave a caller guessing, and a 0-based guess fails silently by addressing
+    the wrong element.
+    """
+    readme = _require(README)
+    assert "1-based" in readme, (
+        "the README documents the sketch tools but never states the indexing "
+        "convention, so a caller has nothing to go on"
     )
 
 
@@ -245,6 +412,97 @@ def test_readme_decision_count_matches_the_spine() -> None:
     )
 
 
+def test_readme_sketch_example_values_are_correct() -> None:
+    """The README's worked example must print the numbers it will actually get.
+
+    Every figure in that block is derived here from the closed form for a
+    rounded rectangle, not copied from a previous run, so a wrong value fails
+    rather than being re-blessed.
+
+    Worth having because this is the class of error the README has actually
+    made: it claimed a volume of 1600 for this profile, which is the
+    sharp-cornered area, and a `dof` of 16 that was never measured. Both are
+    plausible-looking numbers in the one block a reader is most likely to copy
+    from, and no other test reads the README at all.
+    """
+    readme = _require(README)
+    width, height, corner = 40.0, 20.0, 5.0
+    # A 40x20 rectangle with 5mm rounded corners: the four corner squares of
+    # side r lose (4 - pi) * r^2 to the quarter circles.
+    area = width * height - (4 - math.pi) * corner**2
+    plate = area * 4.0
+    boss = area * 2.0
+
+    for value in (f"{area:.3f}", f"{plate:.2f}", f"{boss:.2f}"):
+        assert value in readme, (
+            f"the README's sketch example does not print {value}, which is "
+            f"what FreeCAD returns for the profile it draws"
+        )
+    # The degrees of freedom that profile actually has. Arcs and lines are
+    # fully determined by their coordinates, so there is nothing left to solve.
+    assert '"dof": 0' in readme, (
+        "the README quotes a degrees-of-freedom figure for a profile with no "
+        "constraints; the real value is 0"
+    )
+    # The z span the attached extrusion occupies: the box top is z=4.
+    assert "z 4..6" in readme, (
+        "the README's face-attachment example does not state the z range the "
+        "boss occupies, so a caller cannot tell the attachment took effect"
+    )
+
+
+def test_readme_primitive_example_values_are_correct() -> None:
+    """The first worked example's volumes, checked against the same arithmetic.
+
+    Guarded alongside the sketch block so the README cannot drift in one place
+    and stay correct in another. Both figures were re-measured against
+    FreeCAD 1.1.3 when this was written; a 40x20x4 plate is 3200, a 2mm-radius
+    hole through 4mm removes pi*4*4 = 50.265, and filleting two edges of
+    2mm removes the remaining 6.86.
+    """
+    readme = _require(README)
+    # The README uses a Unicode minus (U+2212) in prose, so the dash is
+    # normalised before matching rather than being hardcoded as ASCII.
+    plain = readme.replace("\u2212", "-")
+    plate = 40.0 * 20.0 * 4.0
+    # A 2mm-radius hole through 4mm of plate. Exact to 2dp: pi*4*4 = 50.265...
+    drilled = plate - math.pi * 2.0**2 * 4.0
+    assert f"{drilled:.2f}" in readme, (
+        f"the README should show {drilled:.2f} for a 40x20x4 plate with a 2mm "
+        f"hole through it; {drilled:.2f} is what FreeCAD 1.1.3 returns"
+    )
+    # The filleted figure is the kernel's own arithmetic, not closed form, so it
+    # is pinned to the measured value rather than derived. Checked exactly: a
+    # range here passed a 3149.74-for-3149.73 near-miss, which is precisely the
+    # error this is meant to catch.
+    filleted = 3142.87
+    assert f"volume {filleted:.2f}" in readme, (
+        f"the README's filleted volume should be {filleted:.2f}, measured "
+        f"against FreeCAD 1.1.3"
+    )
+    # Re-measured before this was pinned: the fillet removes 6.86, and the
+    # README said 6.87. Its own two figures did not add up, which is the kind
+    # of thing a reader checks and concludes the docs are careless.
+    removed = round(drilled - filleted, 2)
+    assert (
+        f"volume {filleted:.2f}" in readme and f"{removed:.2f} of rounding" in plain
+    ), (
+        f"the README should say {removed:.2f} of rounding, being "
+        f"{drilled:.2f} - {filleted:.2f}"
+    )
+    # And the subtraction the README shows must add up. Checking the volume
+    # alone let a wrong figure through, because the parenthetical still said
+    # the right thing; both halves have to agree with each other.
+    assert f"{plate:.0f} plate - {plate - drilled:.2f} hole" in plain, (
+        "the README's breakdown of the drilled volume does not add up: it "
+        f"should read '{plate:.0f} plate - {plate - drilled:.2f} hole'"
+    )
+    assert f"{drilled:.2f} - {drilled - filleted:.2f}" in plain, (
+        "the README's breakdown of the filleted volume does not add up: it "
+        f"should read '{drilled:.2f} - {drilled - filleted:.2f}'"
+    )
+
+
 def test_readme_tool_count_matches_the_code() -> None:
     """The README states how many tools the server exposes. Keep it true.
 
@@ -340,7 +598,7 @@ def test_spine_final_implies_no_unsettled_assumptions() -> None:
     could not have failed. It was cited as the reason `final` was safe.
     """
     spine = _require(SPINE)
-    if "status: final" not in spine:
+    if _spine_status(spine) != "final":
         return
     offenders = [
         f"L{number}: {line.strip()}"
@@ -355,6 +613,20 @@ def test_spine_final_implies_no_unsettled_assumptions() -> None:
     )
 
 
+def _spine_status(spine: str) -> str:
+    """The status from the frontmatter, not any mention of the word in prose.
+
+    A substring search for "status: final" also matched a sentence explaining
+    why the status had been returned to draft, which made a draft spine look
+    final. Frontmatter only: the line must be the one after `type:`'s sibling
+    block, which is the first `status:` at the start of a line before any `##`.
+    """
+    for line in spine.splitlines():
+        if line.startswith("status:"):
+            return line.split(":", 1)[1].strip()
+    return "unknown"
+
+
 def test_spine_final_has_no_deferred_rows() -> None:
     """`status: final` means nothing is deferred, so the table must be empty.
 
@@ -365,7 +637,7 @@ def test_spine_final_has_no_deferred_rows() -> None:
     for `status: final`.
     """
     spine = _require(SPINE)
-    if "status: final" not in spine:
+    if _spine_status(spine) != "final":
         return
     lines = _deferred_table_lines(spine)
     assert not lines, (

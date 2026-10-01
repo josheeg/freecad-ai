@@ -47,11 +47,13 @@ needs; the feature tree is a much larger build with a much larger test surface.
 
 - **CAP-S4**
   - **intent:** A caller can constrain a sketch so dimensions are driven by named constraints rather than baked into coordinates.
-  - **success:** A caller can add a distance and a horizontal constraint, read back the remaining degrees of freedom, and confirm the solver reaches the intended result.
+  - **success:** A caller names a `Distance` constraint, re-drives it, and the solver moves the geometry to match — read back from the sketch, not echoed from the request. Verified: a 40x20 profile's named `width` re-driven to 75 reports `value: 75.0` and stays a single constraint; a closed rectangle re-driven from 40x20 to 60x35 keeps `closed: true` throughout.
+  - **note:** This was partly fiction until the naming work landed. There was no way to remove a constraint, `sketch_status` did not report how many existed, and no dimension could be changed without destroying and re-adding it. `remove_sketch_constraint` and `set_constraint_value` are what make the claim true (AD-29, AD-31).
 
 - **CAP-S5**
   - **intent:** A caller can edit and delete sketch geometry, and delete a sketch, without corrupting the document.
   - **success:** Removing a line from a four-edge sketch leaves three edges that are correctly renumbered, and a deleted sketch leaves no trace in `list_objects`.
+  - **note:** Renumbering is why geometry and constraints can be **named**. A name is reindexed in the same call that renumbers the geometry, so it still refers to the same element afterwards; an index held across an edit silently comes to mean something else (AD-30). Verified: removing the middle of four named lines moves `top` from index 3 to 2 and a constraint built from the name still lands on the element it names.
 
 - **CAP-S6**
   - **intent:** A sketch can be placed in space and attached to a face, so profiles are not confined to one plane.
@@ -63,7 +65,7 @@ needs; the feature tree is a much larger build with a much larger test surface.
 
 - **CAP-S8**
   - **intent:** A caller can snap a sketch flat onto a planar face of an existing object, so a profile follows a surface rather than a plane they must compute.
-  - **success:** A 30×15 sketch attached to the top face of a 40×20×4 box takes that face's position and extrudes normal to it — verified: volume 900mm³ spanning z 4 to 6. A non-planar face is refused by name rather than producing a degenerate placement.
+  - **success:** A 30×15 sketch attached to the top face of a 40×20×4 box takes that face's position and extrudes normal to it — verified: volume 900mm³ spanning z 4 to 6. A non-planar face is refused by name rather than producing a degenerate placement. The face is named by a 1-based integer, the convention edges use, so a wrong index is answered the same way on both.
 
 - **CAP-S9**
   - **intent:** A caller can turn a closed profile into a real planar face, which carries the area a wire cannot.

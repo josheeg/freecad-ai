@@ -10,6 +10,7 @@ from __future__ import annotations
 import http.client
 import os
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -66,11 +67,47 @@ def configured_port() -> int:
 # unqualified path silently binds the wrong one.
 FREECAD_1_1_BIN = Path(r"C:\Program Files\FreeCAD 1.1\bin")
 
+
 # The FreeCAD-side script lives inside the package so it ships in the wheel.
 # It must stay a sibling of this module rather than a path relative to the
 # project root: an installed wheel has no project root, and deriving one from
 # __file__ resolves to site-packages' parent, which contains no script.
-BRIDGE_SCRIPT = Path(__file__).resolve().parent / "_freecad_bridge.py"
+#
+# Under PyInstaller, `__file__` points into `sys._MEIPASS` - the directory the
+# onefile archive unpacks itself into - so the sibling rule keeps working, but
+# only if the script is shipped as *data* alongside the code. A bundle that
+# forgets `--add-data` resolves this to a path that does not exist and fails at
+# the first bridge call, so the check below is what turns a packaging mistake
+# into a sentence rather than a hang.
+def _bundle_root() -> Path | None:
+    """`sys._MEIPASS` when running frozen, otherwise None.
+
+    Read from `sys` on every call rather than captured at import: the module
+    must stay importable under the project's own interpreter, where the
+    attribute simply is not there.
+    """
+    root = getattr(sys, "_MEIPASS", None)
+    return Path(root) if isinstance(root, str) and root else None
+
+
+def _bridge_script() -> Path:
+    """Where the FreeCAD-side script actually is.
+
+    Two layouts, one rule. Frozen, the payload is unpacked into `sys._MEIPASS`
+    and the script is a sibling of this module there. Installed or in a source
+    checkout, it is a sibling of this module too. So the same expression covers
+    both, and the frozen case only needs the script shipped as data.
+    """
+    here = Path(__file__).resolve().parent
+    root = _bundle_root()
+    if root is not None:
+        candidate = root / "_freecad_bridge.py"
+        if candidate.is_file():
+            return candidate
+    return here / "_freecad_bridge.py"
+
+
+BRIDGE_SCRIPT = _bridge_script()
 
 
 class BridgeError(RuntimeError):
@@ -169,8 +206,9 @@ class NotASketch(BridgeError):
 
 class NoSuchConstraint(BridgeError):
     hint = (
-        "That constraint does not exist. FreeCAD numbers constraint elements "
-        "from 0, unlike the 1-based geometry and edge numbers elsewhere."
+        "Constraints are 1-based, like every other index here, and FreeCAD "
+        "renumbers them after a removal. Read the current count from "
+        "sketch_status rather than remembering an index across an edit."
     )
 
 
@@ -221,16 +259,67 @@ _FAULT_MAP: dict[int, type[BridgeError]] = {
 }
 
 
+def _label(label: str | None) -> str:
+    """A caller-chosen name, or an empty string for none.
+
+    Empty rather than ``None`` because XML-RPC cannot marshal None with
+    allow_none disabled - the server cannot turn the feature off to keep the
+    wire simple. So an empty string is the wire's "no name", and the bridge
+    treats it as absent. Every other string goes through untouched, leaving
+    the rule for what makes a valid name in one place.
+    """
+    return label if isinstance(label, str) else ""
+
+
+def _geometry_ref(reference: str | int) -> str | int:
+    """A reference to sketch geometry or a constraint: a name, or a 1-based index.
+
+    Which is which is decided by the sketch, not here - only the bridge knows
+    what is named. A bool is refused because it is an int in Python and would
+    silently become index 1.
+    """
+    if isinstance(reference, bool):
+        raise BadGeometry(
+            f"geometry reference must be a name or a 1-based index, got {reference!r}"
+        )
+    return reference
+
+
+def _index(value: Any) -> int:
+    """Coerce a 1-based index, refusing bools and non-integers.
+
+    ``int("face6")`` raises a bare ValueError, which MCPServer would surface as
+    an opaque UnexpectedToolError rather than the typed BadGeometry the
+    bridge itself would have produced. Coercing here keeps the error typed on
+    both sides of the wire.
+    """
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise BadGeometry(f"expected a 1-based integer index, got {value!r}")
+    return value
+
+
 def _dim(value: Any) -> float:
-    """Coerce a caller-supplied dimension, refusing bools.
+    """Coerce a caller-supplied dimension, refusing bools and non-finite values.
 
     A bool is an int in Python, so ``float(True)`` is ``1.0``. Without this a
     caller who passed a flag where a coordinate belongs would silently get a
-    1mm line rather than an error. The bridge checks again on its side; this
-    catches it before the round trip.
+    1mm line rather than an error.
+
+    NaN and infinity are refused for a sharper reason: they pass every
+    comparison-based guard in the bridge, because ``nan == 0`` and ``nan < 0``
+    are both False, and FreeCAD does not reject them either - a NaN depth
+    *terminates* it. ``json`` and ``xmlrpc`` both marshal NaN happily, so this
+    is reachable from ordinary input rather than a contrived one. See AD-25.
+
+    The bridge checks again on its side; this catches it before the round trip.
     """
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise BadGeometry(f"expected a number, got {value!r}")
+    if value != value or value in (float("inf"), float("-inf")):
+        raise BadGeometry(
+            f"expected a finite number, got {value!r}; NaN and infinity are "
+            f"refused because FreeCAD terminates on them"
+        )
     return float(value)
 
 
@@ -386,8 +475,8 @@ class Bridge:
                 name,
                 object_name,
                 result_name,
-                [int(e) for e in edges],
-                float(radius),
+                [_index(e) for e in edges],
+                _dim(radius),
             ),
         )
 
@@ -406,8 +495,8 @@ class Bridge:
                 name,
                 object_name,
                 result_name,
-                [int(e) for e in edges],
-                float(size),
+                [_index(e) for e in edges],
+                _dim(size),
             ),
         )
 
@@ -473,6 +562,7 @@ class Bridge:
         y1: float,
         x2: float,
         y2: float,
+        label: str | None = None,
     ) -> dict[str, Any]:
         return cast(
             "dict[str, Any]",
@@ -484,6 +574,7 @@ class Bridge:
                 _dim(y1),
                 _dim(x2),
                 _dim(y2),
+                _label(label),
             ),
         )
 
@@ -496,6 +587,7 @@ class Bridge:
         radius: float,
         start_angle: float,
         end_angle: float,
+        label: str | None = None,
     ) -> dict[str, Any]:
         return cast(
             "dict[str, Any]",
@@ -508,6 +600,7 @@ class Bridge:
                 _dim(radius),
                 _dim(start_angle),
                 _dim(end_angle),
+                _label(label),
             ),
         )
 
@@ -518,6 +611,7 @@ class Bridge:
         cx: float,
         cy: float,
         radius: float,
+        label: str | None = None,
     ) -> dict[str, Any]:
         return cast(
             "dict[str, Any]",
@@ -528,15 +622,45 @@ class Bridge:
                 _dim(cx),
                 _dim(cy),
                 _dim(radius),
+                _label(label),
             ),
         )
 
     def remove_sketch_geometry(
-        self, name: str, sketch_name: str, index: int
+        self, name: str, sketch_name: str, reference: str | int
     ) -> dict[str, Any]:
         return cast(
             "dict[str, Any]",
-            self._call("remove_sketch_geometry", name, sketch_name, int(index)),
+            self._call(
+                "remove_sketch_geometry", name, sketch_name, _geometry_ref(reference)
+            ),
+        )
+
+    def remove_sketch_constraint(
+        self, name: str, sketch_name: str, reference: str | int
+    ) -> dict[str, Any]:
+        return cast(
+            "dict[str, Any]",
+            self._call(
+                "remove_sketch_constraint",
+                name,
+                sketch_name,
+                _geometry_ref(reference),
+            ),
+        )
+
+    def set_constraint_value(
+        self, name: str, sketch_name: str, reference: str | int, value: float
+    ) -> dict[str, Any]:
+        return cast(
+            "dict[str, Any]",
+            self._call(
+                "set_constraint_value",
+                name,
+                sketch_name,
+                _geometry_ref(reference),
+                _dim(value),
+            ),
         )
 
     def add_sketch_constraint(
@@ -544,11 +668,12 @@ class Bridge:
         name: str,
         sketch_name: str,
         kind: str,
-        first: int,
+        first: str | int,
         first_pos: int,
-        second: int,
+        second: str | int,
         second_pos: int,
         value: float,
+        label: str | None = None,
     ) -> dict[str, Any]:
         return cast(
             "dict[str, Any]",
@@ -557,11 +682,12 @@ class Bridge:
                 name,
                 sketch_name,
                 str(kind),
-                int(first),
-                int(first_pos),
-                int(second),
-                int(second_pos),
+                _geometry_ref(first),
+                _index(first_pos),
+                _geometry_ref(second),
+                _index(second_pos),
                 _dim(value),
+                _label(label),
             ),
         )
 
@@ -577,12 +703,12 @@ class Bridge:
         )
 
     def attach_sketch_to_face(
-        self, name: str, sketch_name: str, target: str, face_name: str
+        self, name: str, sketch_name: str, target: str, face_name: int
     ) -> dict[str, Any]:
         return cast(
             "dict[str, Any]",
             self._call(
-                "attach_sketch_to_face", name, sketch_name, target, str(face_name)
+                "attach_sketch_to_face", name, sketch_name, target, _index(face_name)
             ),
         )
 

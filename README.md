@@ -7,6 +7,8 @@ so the two never share an interpreter. This is deliberate: FreeCAD links
 `python311.dll` and cannot be imported from any other Python, so the process
 boundary is the design rather than a workaround.
 
+See [CHANGELOG.md](CHANGELOG.md) for what changed in each release.
+
 ## Requirements
 
 - Python 3.14 (`uv` manages the environment)
@@ -62,7 +64,80 @@ itself launches instantly. It runs headless — no GUI instance is started.
 | `linear_array` | Repeat along a line, fusing the copies |
 | `set_placement` | Move and rotate an object |
 | `shape_summary` | Volume, area and bounding box |
+| `measure` | Mass properties and topology: centre of mass, counts, and whether the shape is valid |
+| `distance` | Closest distance between two objects, or an object and a point |
+| `is_inside` | Whether a point lies inside an object's solid |
+| `cross_section` | Slice with a plane and report the section's area and wire count |
 | `export_object` | Write an object to `.step`, `.stl`, `.iges`, `.obj` or `.brep` |
+
+### Sketches
+
+#### Standalone executable
+
+`just freeze` builds `dist/freecad-ai.exe` — a single file, about 24 MB, that
+needs **neither Python nor `uv`** on the machine running it. Point your MCP
+client at it:
+
+```json
+{ "mcpServers": { "freecad-ai": { "command": "C:\\path\\to\\freecad-ai.exe" } } }
+```
+
+FreeCAD itself is **not** bundled. It stays a separate install, found via
+`FREECAD_AI_FREECAD_BIN` or the default `C:\Program Files\FreeCAD 1.1\bin`. That
+is not an omission: FreeCAD links `python311.dll` and this server runs on 3.14,
+so the two cannot share a process. It is also what keeps the executable small.
+
+`just verify-freeze` rebuilds and then **drives FreeCAD through the exe**,
+because a bundle can start, list all its tools, and still fail on the first
+call that needs FreeCAD. The check also confirms no FreeCAD was left running.
+
+Both recipes sit deliberately outside `just check`: the build takes about 40
+seconds, which would dominate the gate, so it is verified by its own recipe
+rather than assumed on every commit.
+
+#### Tools
+
+All indices in this surface are **1-based** — edges, faces, sketch geometry and
+constraint elements alike. Every index-taking tool also accepts a **name** where
+one exists, and a name is worth preferring: FreeCAD renumbers geometry when you
+remove something, so an index held across an edit silently comes to mean a
+different element, while a name does not.
+
+| Tool | Purpose |
+| --- | --- |
+| `add_sketch` | Create an empty sketch, optionally at a placement |
+| `add_sketch_line` | A line from `(x1,y1)` to `(x2,y2)`, optionally named |
+| `add_sketch_arc` | An arc: centre, radius, start and end angle in degrees |
+| `add_sketch_circle` | A circle: centre and radius |
+| `remove_sketch_geometry` | Remove geometry by name or 1-based index |
+| `add_sketch_constraint` | Add a constraint, optionally named |
+| `remove_sketch_constraint` | Remove a constraint by name or 1-based index |
+| `set_constraint_value` | Re-drive a named `Distance`; the solver moves the geometry |
+| `sketch_status` | Closed or not, area, dof, constraint count, and every name |
+| `extrude_sketch` | Turn a **closed** profile into a solid of a given depth |
+| `attach_sketch_to_face` | Snap a sketch flat onto a planar face of another object |
+| `sketch_to_face` | Turn a closed profile into a real planar face |
+
+`sketch_status` is the one to call first. **An unclosed profile does not fail at
+extrude time — it produces a wrong solid**, so `extrude_sketch` refuses one
+explicitly instead.
+
+`set_constraint_value` is why a constraint is worth naming. A `Distance` you can
+only reach by index can be changed only by being destroyed and re-added; a named
+one can be moved, and FreeCAD's solver drags the geometry to match:
+
+```python
+add_sketch_line("bracket", "Profile", 0, 0, 40, 0, name="base")
+add_sketch_constraint("bracket", "Profile", "Horizontal", "base", 1, "base", 2)
+add_sketch_constraint(
+    "bracket", "Profile", "Distance", "base", 1, "base", 2, 40.0, name="width"
+)
+
+set_constraint_value("bracket", "Profile", "width", 60.0)
+# {"constraint_name": "width", "value": 60.0, "dof": 0, ...}
+sketch_status("bracket", "Profile")
+# {"geometry": [{"geometry": 1, "name": "base"}], "constraints": [...], ...}
+```
 
 Dimensional properties are reported as `{"value": 10.0, "unit": "mm"}` rather
 than bare numbers, and a value read back with `get_properties` can be passed
@@ -146,7 +221,7 @@ src/freecad_ai/_freecad_bridge.py  runs under FreeCAD's bundled Python 3.11;
                                   the only file permitted to import FreeCAD,
                                   launched by path and never imported
 src/freecad_ai/bridge.py           XML-RPC client and process launcher (3.14)
-src/freecad_ai/server.py           MCP server, 34 tools over stdio
+src/freecad_ai/server.py           MCP server, 36 tools over stdio
 scripts/freecad_procs.py           reports or stops leaked FreeCAD processes
 ```
 
@@ -173,7 +248,7 @@ Rounding an edge needs to know which edge is which, so ask first:
 ```python
 describe_geometry("bracket", "Drilled")  # {"edges": [{"name": "Edge1", ...}], ...}
 fillet("bracket", "Drilled", "Rounded", edges=[1, 3], radius=2.0)
-shape_summary("bracket", "Rounded")  # volume 3142.87 (3149.73 − 6.87 of rounding)
+shape_summary("bracket", "Rounded")  # volume 3142.87 (3149.73 − 6.86 of rounding)
 ```
 
 `linear_array` is the one tool whose result is not parametric: it fuses static
@@ -215,7 +290,7 @@ drawn in the XY plane lands in the same place on the face:
 
 ```python
 add_primitive("bracket", "Part::Box", "Base", {"Length": 40, "Width": 20, "Height": 4})
-attach_sketch_to_face("bracket", "Profile", "Base", "Face6")  # top face
+attach_sketch_to_face("bracket", "Profile", "Base", 6)  # 1-based face index
 extrude_sketch("bracket", "Profile", "Boss", depth=2.0)
 # volume 1557.08  (= 778.54 * 2), spanning z 4..6
 ```
@@ -243,7 +318,7 @@ commit messages, under `_bmad-output/initiative-freecad-mcp-server/`:
   `tool-surface.md`, `failure-modes.md` and `conventions.md`. What the system
   does, and what it deliberately does not.
 - **Spine** — `architecture-freecad-ai-server/architecture-freecad-ai-server.md`.
-  Twenty-two numbered decisions, AD-1…AD-22, each naming the failure it
+  Thirty-one numbered decisions, AD-1…AD-31, each naming the failure it
   prevents. These are binding on any change here.
 
 `AGENTS.md` points at both, and a test asserts the counts in all three files

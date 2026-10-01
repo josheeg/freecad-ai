@@ -392,7 +392,10 @@ def add_sketch(document: str, sketch_name: str) -> str:
 @_tool(
     "add_sketch_line",
     "Add a line segment to a sketch, from (x1,y1) to (x2,y2) in the sketch "
-    "plane. Returns the new 1-based geometry index.",
+    "plane. Returns the new 1-based geometry index. Pass `name` to give it a "
+    "reference that survives an edit elsewhere in the sketch - FreeCAD "
+    "renumbers geometry on removal, so an index held across an edit can come to "
+    "mean different geometry. A name must be unique within the sketch.",
 )
 def add_sketch_line(
     document: str,
@@ -401,15 +404,17 @@ def add_sketch_line(
     y1: float,
     x2: float,
     y2: float,
+    name: str | None = None,
 ) -> dict[str, Any]:
-    return get_bridge().add_sketch_line(document, sketch_name, x1, y1, x2, y2)
+    return get_bridge().add_sketch_line(document, sketch_name, x1, y1, x2, y2, name)
 
 
 @_tool(
     "add_sketch_arc",
     "Add an arc to a sketch: centre (cx,cy), radius, and start/end angles in "
     "degrees measured counter-clockwise from +X. A mis-spanned arc is the usual "
-    "reason a profile fails to close, so check `sketch_status` afterwards.",
+    "reason a profile fails to close, so check `sketch_status` afterwards. "
+    "Pass `name` for a reference that survives an edit.",
 )
 def add_sketch_arc(
     document: str,
@@ -419,15 +424,17 @@ def add_sketch_arc(
     radius: float,
     start_angle: float,
     end_angle: float,
+    name: str | None = None,
 ) -> dict[str, Any]:
     return get_bridge().add_sketch_arc(
-        document, sketch_name, cx, cy, radius, start_angle, end_angle
+        document, sketch_name, cx, cy, radius, start_angle, end_angle, name
     )
 
 
 @_tool(
     "add_sketch_circle",
-    "Add a full circle to a sketch, centred at (cx,cy) with the given radius.",
+    "Add a full circle to a sketch, centred at (cx,cy) with the given radius. "
+    "Pass `name` for a reference that survives an edit.",
 )
 def add_sketch_circle(
     document: str,
@@ -435,42 +442,93 @@ def add_sketch_circle(
     cx: float,
     cy: float,
     radius: float,
+    name: str | None = None,
 ) -> dict[str, Any]:
-    return get_bridge().add_sketch_circle(document, sketch_name, cx, cy, radius)
+    return get_bridge().add_sketch_circle(document, sketch_name, cx, cy, radius, name)
 
 
 @_tool(
     "remove_sketch_geometry",
-    "Remove one piece of sketch geometry by its 1-based index. FreeCAD "
-    "renumbers the rest, so re-read the indices afterwards.",
+    "Remove one piece of sketch geometry, addressed by its `name` or by a "
+    "1-based index. FreeCAD renumbers the rest, so an index held across the "
+    "call now means something else; names are reindexed with the geometry and "
+    "keep pointing at the right element.",
 )
 def remove_sketch_geometry(
     document: str,
     sketch_name: str,
-    index: int,
+    reference: str | int,
 ) -> dict[str, Any]:
-    return get_bridge().remove_sketch_geometry(document, sketch_name, index)
+    return get_bridge().remove_sketch_geometry(document, sketch_name, reference)
+
+
+@_tool(
+    "remove_sketch_constraint",
+    "Remove one constraint from a sketch by its 1-based index. A sketch is "
+    "otherwise add-only, so without this a constraint that turns out wrong has "
+    "to be undone by discarding the sketch and its geometry. FreeCAD renumbers "
+    "the remaining constraints, so read `constraint_count` from `sketch_status` "
+    "rather than remembering an index across an edit.",
+)
+def remove_sketch_constraint(
+    document: str,
+    sketch_name: str,
+    reference: str | int,
+) -> dict[str, Any]:
+    return get_bridge().remove_sketch_constraint(document, sketch_name, reference)
+
+
+@_tool(
+    "set_constraint_value",
+    "Re-drive a dimensional constraint to a new value, addressed by its name "
+    "or a 1-based index. This is the reason to name a constraint: a Distance "
+    "added by index can only be removed and re-added to change it, while a "
+    "named one can be moved. FreeCAD's solver moves the geometry to match. "
+    "Only a Distance constraint has a value; anything else is refused. A value "
+    "that would have to replace geometry rather than move it is rolled back.",
+)
+def set_constraint_value(
+    document: str,
+    sketch_name: str,
+    reference: str | int,
+    value: float,
+) -> dict[str, Any]:
+    return get_bridge().set_constraint_value(document, sketch_name, reference, value)
 
 
 @_tool(
     "add_sketch_constraint",
     "Constrain a sketch. kind is Coincident, Horizontal, Vertical, Parallel, "
-    "Perpendicular, Equal or Distance; only Distance uses value. NOTE: `first` "
-    "and `second` are 0-based geometry indices, as FreeCAD numbers them — "
-    "unlike the 1-based indices used by every other tool here.",
+    "Perpendicular, Equal or Distance; only Distance uses value. `first` and "
+    "`second` are 1-based geometry indices, as everywhere else in this surface, "
+    "or a geometry `name` - which is preferred, since a name still refers to the "
+    "right element after an unrelated removal renumbers the indices. "
+    "`first_pos` and `second_pos` are 1 for start, 2 for end, 3 for mid. "
+    "Pass `name` to name the constraint itself, which is what lets "
+    "`set_constraint_value` re-drive it later and "
+    "`remove_sketch_constraint` undo it by name.",
 )
 def add_sketch_constraint(
     document: str,
     sketch_name: str,
     kind: str,
-    first: int = 0,
+    first: str | int = 1,
     first_pos: int = 1,
-    second: int = 0,
+    second: str | int = 1,
     second_pos: int = 2,
     value: float = 0.0,
+    name: str | None = None,
 ) -> dict[str, Any]:
     return get_bridge().add_sketch_constraint(
-        document, sketch_name, kind, first, first_pos, second, second_pos, value
+        document,
+        sketch_name,
+        kind,
+        first,
+        first_pos,
+        second,
+        second_pos,
+        value,
+        name,
     )
 
 
@@ -479,7 +537,8 @@ def add_sketch_constraint(
     "Report a sketch's geometry count, whether its outline is closed, its area, "
     "and remaining degrees of freedom. CHECK `closed` BEFORE calling "
     "`extrude_sketch`: an unclosed profile does not fail at extrude time, it "
-    "silently produces a wrong solid. Area is 0.0 for an unclosed profile.",
+    "silently produces a wrong solid. Area is 0.0 for an unclosed profile. "
+    "Also reports `constraint_count` and the `geometry` name mapping.",
 )
 def sketch_status(document: str, sketch_name: str) -> dict[str, Any]:
     return get_bridge().sketch_status(document, sketch_name)
@@ -504,16 +563,17 @@ def extrude_sketch(
 @_tool(
     "attach_sketch_to_face",
     "Snap a sketch flat onto a planar face of another object, so it takes that "
-    "face's position and orientation and extrudes normal to it. `face_name` is "
-    "a Face{N} index from `describe_geometry`; a non-planar face is refused.",
+    "face's position and orientation and extrudes normal to it. `face` is a "
+    "1-based integer from `describe_geometry`, the same convention `fillet` and "
+    "`chamfer` use for edges. A non-planar face is refused.",
 )
 def attach_sketch_to_face(
     document: str,
     sketch_name: str,
     target: str,
-    face_name: str,
+    face: int,
 ) -> dict[str, Any]:
-    return get_bridge().attach_sketch_to_face(document, sketch_name, target, face_name)
+    return get_bridge().attach_sketch_to_face(document, sketch_name, target, face)
 
 
 @_tool(

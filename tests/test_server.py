@@ -85,6 +85,8 @@ def test_every_tool_is_registered(registry: Any) -> None:
         "add_sketch_circle",
         "remove_sketch_geometry",
         "add_sketch_constraint",
+        "remove_sketch_constraint",
+        "set_constraint_value",
         "sketch_status",
         "extrude_sketch",
         "attach_sketch_to_face",

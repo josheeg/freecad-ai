@@ -95,9 +95,43 @@ kill-freecad:
 build:
     uv build
 
+# Dry-run a release: build everything, verify the executable against a real
+# FreeCAD, check each archive contains the bridge script, write SHA256SUMS and
+# the release notes. Nothing is uploaded - the tag-triggered release workflow
+# does that. Use this to see exactly what would be published.
+release-dry-run:
+    uv run python scripts/release.py --dry-run
+
+# Check a tag against the declared version without building anything. The
+# cheapest possible check, and it catches the defect nothing else does: tag
+# v0.2.0 without bumping pyproject.toml, and 0.1.0 ships under a 0.2.0 label.
+release-check TAG:
+    uv run python scripts/release.py --tag "{{TAG}}" --skip-exe --dry-run
+
 # Start the MCP server on stdio, for driving it by hand.
 serve:
     uv run freecad-ai
+
+# Build a standalone Windows x64 executable, so a user needs neither Python nor
+# uv. FreeCAD is NOT bundled: it stays an external freecadcmd process, because
+# it links python311.dll and this server runs on 3.14. AD-1's rule that the
+# server never imports FreeCAD is what makes a ~24 MB binary possible.
+#
+# Not part of `just check`, deliberately. The build takes about 40s, which would
+# dominate a gate that otherwise runs in seconds, and it is verified by
+# `just verify-freeze` rather than assumed. A broken spec therefore fails its
+# own recipe, not every commit.
+freeze:
+    uv run --with pyinstaller pyinstaller --noconfirm --clean --distpath dist --workpath build/freeze packaging/freecad-ai.spec
+
+# Prove a frozen build actually works, which is not the same as existing.
+#
+# A bundle missing the bridge script as data starts, serves `list_tools`, and
+# then fails on the first call that crosses into FreeCAD - so the check drives
+# FreeCAD through the exe rather than asserting the file is there. It also
+# asserts nothing was left running, per AD-20.
+verify-freeze: freeze
+    uv run python scripts/verify_freeze.py
 
 # Remove build and cache output. Not dist/ by default - a built wheel is
 # evidence the packaging works, so removing it should be deliberate.

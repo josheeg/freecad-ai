@@ -1,7 +1,7 @@
 # Sketch tool surface
 
-The eight tools this spec adds. All are **additive** — the existing 24 are
-unchanged, and a sketch-derived solid is an ordinary object to all of them.
+The sketch tools. All are **additive** — everything else is unchanged, and a
+sketch-derived solid is an ordinary object to all of them.
 
 Every sketch tool takes `document` and `sketch` names, not handles, consistent
 with AD-8. Geometry is described in the server's own terms and constructed on
@@ -12,12 +12,14 @@ the FreeCAD side.
 | Tool | Purpose |
 | --- | --- |
 | `add_sketch` | Create an empty sketch, optionally at a placement |
-| `add_sketch_line` | Add a line segment from `(x1,y1)` to `(x2,y2)` |
-| `add_sketch_arc` | Add an arc: centre, radius, start and end angle |
-| `add_sketch_circle` | Add a circle: centre and radius |
-| `remove_sketch_geometry` | Remove geometry by 1-based index |
-| `add_sketch_constraint` | Add a constraint by type and the geometry it touches |
-| `sketch_status` | Closed or not, edge count, area, degrees of freedom |
+| `add_sketch_line` | Add a line segment from `(x1,y1)` to `(x2,y2)`, optionally named |
+| `add_sketch_arc` | Add an arc: centre, radius, start and end angle, optionally named |
+| `add_sketch_circle` | Add a circle: centre and radius, optionally named |
+| `remove_sketch_geometry` | Remove geometry by name or 1-based index |
+| `add_sketch_constraint` | Add a constraint by type and the geometry it touches, optionally named |
+| `remove_sketch_constraint` | Remove a constraint by name or 1-based index |
+| `set_constraint_value` | Re-drive a named `Distance` and let the solver move the geometry |
+| `sketch_status` | Closed or not, area, dof, constraint count, and every name |
 | `extrude_sketch` | Turn a closed profile into a solid of a given depth |
 | `attach_sketch_to_face` | Snap a sketch flat onto a planar face of another object |
 | `sketch_to_face` | Turn a closed profile into a real planar face. A static snapshot, and not extrudable — `extrude_sketch` takes a sketch |

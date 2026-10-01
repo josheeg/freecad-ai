@@ -75,8 +75,14 @@ Attachment to a face works, and is worth recording because the property names
 are not guessable. A sketch exposes `AttachmentSupport` (not `Support`, which
 is the FreeCAD 0.x name), `MapMode`, `AttachmentOffset` and `AttacherEngine`.
 
-Verified: attaching a 40×20 sketch to `Face6` of a `Part::Box` with
+Verified: attaching a 40×20 sketch to face 6 of a `Part::Box` with
 `MapMode = "FlatFace"` moved the sketch to `z = 4.0` — the box's top face —
 and extruding it 2mm produced one valid solid of **volume 1600.0** spanning
 `z = 4.0` to `z = 6.0`. The geometry landed on the face and extruded normal to
 it, which is what CAP-S6 requires.
+
+The tool takes a **1-based integer** for the face, the same convention edges
+use. It originally took a `"Face{N}"` string matched by regex, which meant one
+caller mistake got three different answers across the surface — `Edge99` raised
+`BadGeometry`, `Face99` raised `NoSuchFace`, and `"face6"` raised
+`BadGeometry`. One convention, one error.

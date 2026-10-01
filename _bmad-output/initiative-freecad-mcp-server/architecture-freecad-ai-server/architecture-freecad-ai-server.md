@@ -107,6 +107,16 @@ Scoped to a capability. These matter only to the feature that touches them.
 | AD-20 | A function that launches a process owns it until it returns successfully. Every failure path must stop it first, because the caller receives an exception and never gets a handle to clean up. | CAP-7, CAP-8 | An orphaned FreeCAD per failed start, still bound to its port, so the next attempt fails identically — a leak that compounds instead of clearing. |
 | AD-21 | `linear_array` produces a fused set of static copies, permanently. Draft's workbench is not loaded to obtain parametric behaviour. The tool description must say so, because a caller who edits the source and expects the array to follow is wrong in a way nothing else will correct. | CAP-2 | One unit loading Draft to make its arrays parametric and another fusing copies, so the same tool name means two different things. |
 | AD-22 | An argument that can terminate FreeCAD rather than raise must be validated **before** the call that would crash. A caller-supplied enum is checked against a known set, not passed through to a native constructor and hoped for. | CAP-6, CAP-7 | A bad argument killing the bridge process, taking every open document with it and leaving nothing to report the error. Found the hard way: `Sketcher.Constraint` with six arguments terminates FreeCAD; with four it returns. |
+| AD-23 | `extrude_sketch` takes a depth and nothing else. Direction is always the sketch's own normal, so orientation is set by `set_placement` alone. A direction argument is not added. | CAP-2, CAP-6 | A `DirMode` argument that reports success on an empty solid. Measured against 1.1.3: `DirMode = "Custom"` with a direction off the sketch plane produced a **valid shape of volume 0.0**, and `"Edge"` expects a vector rather than an edge, so it is a direction, not a sweep. `Normal` already follows the sketch's rotation — a sketch rotated 90° about X extruded to depth 2 gave volume 200 spanning z 0..10, normal to the rotated plane. One rule for orientation, and it is the one that cannot silently produce nothing. |
+| AD-24 | Only `Part::Extrusion` is exposed. `PartDesign::Pad` is not, despite producing the same volume. | CAP-2 | A second extrude path whose success cannot be trusted. Both give 3200.0mm³ for the same 40×20×4 profile, but Pad emits *"Link(s) to object(s) go out of the allowed scope"* on **every** recompute while its State still reads `Up-to-date` and its volume is correct. Success that must be read past a warning is not a success a caller can check, and one extrude path is worth more than two. |
+| AD-25 | A dimension is validated for **finiteness** before it reaches FreeCAD, not merely for being a number. AD-22's rule, generalised from enums to every float on the wire. | CAP-6, CAP-7 | NaN and infinity pass every comparison-based guard — `nan == 0`, `nan < 0` and `nan <= 0` are all False — so a NaN depth reaches `LengthFwd` unchecked. Verified against 1.1.3: `Part::Extrusion` with `LengthFwd = nan` **terminates the interpreter**, taking every open document with it. `json` and `xmlrpc` both marshal NaN happily, so this is reachable from ordinary input. Enforced at the two choke points every dimension passes through, `_dim` client-side and `_number` bridge-side. |
+| AD-26 | A tool that creates an object owns it until it returns successfully. Every failure path after creation removes it before raising, because the caller gets an exception and no handle on the object. | CAP-6 | An orphan under the caller's own name: `list_objects` shows it, `describe_geometry` on it raises `NO_SHAPE`, and a retry collides. Found twice — fixed once in `sketch_to_face` by reordering, and still live in `extrude_sketch` where both post-recompute checks ran after `_feature`. Validation that cannot happen before creation is followed by rollback, not by hope. |
+| AD-27 | **One addressing convention across the whole surface: every index is 1-based.** Edges, faces, sketch geometry and constraint elements alike. | CAP-1, CAP-S4 | A caller who learned from `fillet` that indices start at 1 guessing wrong on constraints, or a tool author inventing a second convention for their own feature. Constraint elements were the last holdout, 0-based because FreeCAD numbers geometry internally that way; the translation to FreeCAD's numbering happens once, inside the bridge, and is named so it is one obvious line. |
+| AD-28 | An enum argument is validated against the set of values that are **safe**, not the set that is legal in FreeCAD. Where those differ, the safer set governs. | CAP-6, CAP-7 | `PosId 0` is a real FreeCAD value but crashes the interpreter for a two-element constraint, while `PosId 4` and `99` are neither valid nor fatal — they are silently accepted and leave the solver reporting a negative dof. Passing either through is the AD-22 failure in a form that looks like it worked. Probed, not assumed: 1, 2, 3 build cleanly. |
+
+| AD-29 | **Geometry and constraints can be given names, and a name is a first-class reference accepted anywhere an index is.** Names live on the sketch, not in the server, so they travel with a saved document. | CAP-S1, CAP-S4 | An index held across an edit silently comes to mean different geometry — FreeCAD renumbers on removal, so an index the caller is still holding now points somewhere else, and nothing fails. This is the silent-wrong-result class reached through an API shape rather than a FreeCAD quirk. Without it, a caller that must undo one constraint has to discard the sketch and its geometry. |
+| AD-30 | **A name stored alongside renumbered data is reindexed by this surface, in the same call that renumbers it.** FreeCAD renumbers geometry and knows nothing about names; it attaches constraint names to constraints, so only geometry needs rewriting. | CAP-S4 | A name left pointing at its old index after a removal, so `remove_sketch_geometry` or a constraint built from it acts on the wrong element — the failure naming was added to prevent, reintroduced by the naming. The reindex is why the test asserts *which element the constraint landed on* rather than that the call succeeded. |
+| AD-31 | A dimension is re-drivable by name. `set_constraint_value` re-solves the sketch and moves the geometry, rather than the caller removing and re-adding the constraint. | CAP-S4 | A Distance constraint reachable only by index can be changed only by destroying and rebuilding it, which loses anything the caller had built around it. Naming a constraint that cannot then be moved is a label, not a handle. The payoff is measured: a 40x20 profile re-driven to 60x35 stays closed and its area follows. |
 
 ## Boundary contract
 
@@ -183,9 +193,6 @@ these turns out to be load-bearing, promote it to an AD.
 
 ## Deferred
 
-Nothing remains. Each row that was here has been settled, and the ones that
-were assumptions are now confirmed facts rather than untested positions.
-
 Settled rather than deferred, and now binding:
 
 - **Single user, single machine, single caller.** Confirmed by the maintainer
@@ -201,6 +208,34 @@ Settled rather than deferred, and now binding:
   scope, not merely untested.
 - **No publishing.** Local installation is the end state, so there is no
   release workflow and no support policy to maintain.
+
+Open, with the evidence that made each one a question: none. The table is
+empty because every question it has held is now answered and recorded as an
+AD, which is what `status: final` asserts and what the test suite checks.
+
+Two questions that sat here were settled by measurement
+rather than by argument, and both answers are now binding:
+
+- **Direction is not an argument.** AD-23. `extrude_sketch` takes a depth, and
+  the sketch's own normal decides orientation via `set_placement`. The
+  alternative was measured, not assumed: `DirMode = "Custom"` off the sketch
+  plane yields a **valid shape of volume 0.0**, and `"Edge"` wants a vector
+  rather than an edge, so it is a direction and not the sweep it sounds like.
+  `Normal` already follows the sketch's rotation.
+- **`PartDesign::Pad` is not exposed.** AD-24. Both paths give 3200.0mm³ for
+  the same profile, but Pad prints an out-of-scope link warning on every
+  recompute while reporting `Up-to-date` and the right volume. Success that has
+  to be read past a warning is not a success a caller can check.
+
+A third question — whether face addressing is an index or a `Face{N}` string —
+was answered earlier: faces take a **1-based integer** like edges, and every
+wrong index on either raises `BadGeometry`, where it was previously
+`NoSuchFace` for faces and `BadGeometry` for edges.
+
+This section once said "Nothing remains" while three questions were still open,
+having deleted the evidence alongside the questions it did answer. That is why
+`status` was returned to `draft` while they were outstanding, and why it is
+restored to `final` only now that each has a measured answer.
 
 Revisiting any of these is a scope change, not a clarification, and belongs in a
 new AD with its reasoning rather than an edit to this section.

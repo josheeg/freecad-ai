@@ -338,6 +338,72 @@ def test_fault_map_matches_the_bridge_source() -> None:
     assert bridge_module._FAULT_MAP[1] is BridgeInternalError
 
 
+def test_no_fault_constant_is_dead() -> None:
+    """Every FAULT_* constant is actually raised somewhere in the bridge.
+
+    The map test above catches a *code with no constant*; it cannot catch a
+    *constant nothing raises* - and that is the shape a stale entry takes when
+    a condition is renamed or the code path moves. `FAULT_NO_SUCH_CONSTRAINT`
+    sat that way for several rounds: declared, mapped to a client class,
+    required to carry a hint by the test below, and raised nowhere. Every test
+    passed, and the class was fiction.
+
+    Read from the source because the bridge must never be imported. Only
+    direct `_fail(...)` and `raise Fault(...)` references count, which is why
+    the codes are searched as names rather than as numbers.
+    """
+    source = BRIDGE_SCRIPT.read_text(encoding="utf-8")
+    tree = ast.parse(source, filename=str(BRIDGE_SCRIPT), feature_version=(3, 11))
+    declared = {
+        target.id
+        for node in tree.body
+        if isinstance(node, ast.Assign)
+        for target in node.targets
+        if isinstance(target, ast.Name)
+        and target.id.startswith("FAULT_")
+        and isinstance(node.value, ast.Constant)
+        and isinstance(node.value.value, int)
+    }
+    assert declared, "no FAULT_* constants found in the bridge source"
+
+    # FAULT_INTERNAL is the one legitimate exception. It names xmlrpc's own
+    # code 1 so the comment above it has something to point at, and is never
+    # raised by the bridge because xmlrpc raises it for any uncaught
+    # exception. Asserted to be exactly 1 so it cannot drift into colliding
+    # with a real fault.
+    assert "FAULT_INTERNAL" in declared
+    internal = next(
+        node.value.value
+        for node in tree.body
+        if isinstance(node, ast.Assign)
+        for target in node.targets
+        if isinstance(target, ast.Name) and target.id == "FAULT_INTERNAL"
+    )
+    assert internal == 1, (
+        f"FAULT_INTERNAL is {internal}; it must mirror xmlrpc's own code, "
+        f"which is 1. Anything else would shadow a declared fault."
+    )
+
+    # Load contexts are the declarations themselves, so only reads count as
+    # a use. A constant read anywhere else is being passed to _fail or raised.
+    dead = sorted(
+        name
+        for name in declared - {"FAULT_INTERNAL"}
+        if not any(
+            isinstance(node, ast.Name)
+            and node.id == name
+            and not isinstance(node.ctx, ast.Store)
+            for node in ast.walk(tree)
+        )
+    )
+    assert not dead, (
+        f"{dead} are declared and mapped to a client class but never raised. "
+        f"Either raise them on the path that needs them, or delete the "
+        f"constant, its client class, and its _FAULT_MAP entry - a fault kind "
+        f"that cannot occur is a promise the surface cannot keep."
+    )
+
+
 def test_every_fault_kind_carries_a_recovery_hint() -> None:
     """A typed error with no hint fails CAP-6 just as surely as a raised one.
 
